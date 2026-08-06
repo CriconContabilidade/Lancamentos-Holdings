@@ -742,11 +742,42 @@ async function processarContaInvestimento(file){
 
   // --- Conta corrente – Movimentação (semi-automático) ---
   // O saldo também pode "desaparecer" (célula com traço) quando a linha é só
-  // informativa — por isso o segundo valor é opcional.
+  // informativa — por isso o segundo valor é opcional. Isso também faz
+  // "Saldo Anterior"/"Saldo Final" (que não são lançamento) baterem no mesmo
+  // padrão, e depois dos totais ainda vem a seção "Valores em Trânsito"
+  // (também data+1 valor). A seção "Sumário" (1ª página) sempre repete os
+  // valores de saldo anterior/atual da conta corrente numa linha com 4
+  // números no padrão [A A B B] — usamos isso pra identificar com certeza
+  // os 2 valores de saldo e excluir qualquer linha "só 1 número" que bata
+  // com eles. Pra "Valores em Trânsito" (depois dos totais), cortamos a
+  // região na 1ª linha só-número sem data que aparecer (a "Total de
+  // Créditos", que sempre fecha a tabela de conta corrente).
   const CC_ROW = /^(\d{2}\/\d{2}\/\d{2})\s+(-?[\d.]+,\d{2})(?:\s+(-?[\d.]+,\d{2}))?$/;
-  lines.forEach(line=>{
+  const summaryPairLine = lines.find(l=>{
+    const t = l.trim().split(/\s+/);
+    return t.length===4 && t[0]===t[1] && t[2]===t[3] && /^[\d.]+,\d{2}$/.test(t[0]) && /^[\d.]+,\d{2}$/.test(t[2]);
+  });
+  const saldosConhecidos = summaryPairLine
+    ? summaryPairLine.trim().split(/\s+/).filter((v,i)=>i===0||i===2).map(parseBRL)
+    : [];
+  const ccRegionStart = lines.findIndex(l=>CC_ROW.test(l));
+  let ccRegionEnd = lines.length;
+  if(ccRegionStart>=0){
+    for(let i=ccRegionStart+1;i<lines.length;i++){
+      if(/^-?[\d.]+,\d{2}$/.test(lines[i])){ ccRegionEnd = i; break; }
+    }
+  }
+  const ccLines = ccRegionStart>=0 ? lines.slice(ccRegionStart, ccRegionEnd) : [];
+  const ccMatches = [];
+  ccLines.forEach(line=>{
     const m = line.match(CC_ROW);
-    if(!m) return;
+    if(m) ccMatches.push(m);
+  });
+  ccMatches.forEach((m)=>{
+    const temSaldo = m[3]!=null;
+    const valorAbs = Math.abs(parseBRL(m[2]));
+    const éSaldoConhecido = !temSaldo && saldosConhecidos.some(v=>Math.abs(v-valorAbs)<0.005);
+    if(éSaldoConhecido) return; // Saldo Anterior / Saldo Final — não é lançamento
     const [,dataStr,valorStr] = m;
     revisaoContaCorrente.push({ data: brDateToParts(dataStr), valor: parseBRL(valorStr), categoria:"" });
   });
@@ -901,6 +932,7 @@ function renderRevisaoContaCorrente(){
         <option value="corretagem_aluguel" ${r.categoria==='corretagem_aluguel'?'selected':''}>Corretagem aluguel (despesa)</option>
         <option value="taxa_remuneracao" ${r.categoria==='taxa_remuneracao'?'selected':''}>Taxa remuneração aluguel (serviço)</option>
         <option value="ir_remuneracao" ${r.categoria==='ir_remuneracao'?'selected':''}>IR remuneração aluguel</option>
+        <option value="iof_cdb" ${r.categoria==='iof_cdb'?'selected':''}>IOF sobre resgate de CDB</option>
         <option value="ignorar" ${r.categoria==='ignorar'?'selected':''}>Já lançado em outro relatório (ignorar)</option>
       </select></td>
       <td><button class="btn small ghost" onclick="revisaoContaCorrente.splice(${i},1);renderRevisaoContaCorrente();">✕</button></td>
@@ -924,6 +956,8 @@ function aplicarRevisaoContaCorrente(){
       lancRows.push({data:r.data, debito:currentEmpresa.contaAplicacao, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"VALOR REF. APLICAÇÃO FINANCEIRA", origem:"Conta Investimento BTG — emissão CDB"});
     } else if(r.categoria==="corretagem_aluguel"){
       lancRows.push({data:r.data, debito:currentEmpresa.contaCorretagemAluguel, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"PAGAMENTO REF. TAXA DE CORRETAGEM NO ALUGUEL DE AÇÕES", origem:"Conta Investimento BTG — corretagem aluguel"});
+    } else if(r.categoria==="iof_cdb"){
+      lancRows.push({data:r.data, debito:385, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"PAGAMENTO REF. IOF SOBRE RESGATE DE CDB", origem:"Conta Investimento BTG — IOF sobre CDB"});
     }
   });
   Object.values(remuneracaoPorDia).forEach(d=>{
