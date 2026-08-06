@@ -311,6 +311,13 @@ function fmtValorTxt(n){
   if(Number.isInteger(r)) return String(r);
   return r.toFixed(2).replace(".",",");
 }
+// O importador de TXT do Domínio não lida bem com UTF-8 — acentos e cedilha
+// saem desconfigurados (ex. "AÇÕES" virava "AÃ§Ã•ES"). Os TXT de importação
+// (diferente do .xlsx) saem sempre sem acento/cedilha/til por segurança.
+function stripAccentsForTxt(v){
+  if(typeof v !== "string") return v;
+  return v.normalize("NFD").replace(/[̀-ͯ]/g,"");
+}
 function brDateToParts(str){
   const m = String(str).trim().match(/^(\d{2})\/(\d{2})\/(\d{2,4})$/);
   if(!m) return null;
@@ -975,7 +982,7 @@ function aplicarRevisaoContaCorrente(){
 const ESCRITA_HEADER = ["CPF/CNPJ","Razão Social","UF","Município","Endereço","Número Documento","Série","Data","Situação","Acumulador","CFPS","Valor Serviços","Valor Descontos","Valor Dedução","Valor Contábil","Base de Calculo","Alíquota ISS","Valor ISS Normal","Valor ISS Retido","Valor IRRF","Valor PIS","Valor COFINS","Valor CSLL","Valo CRF","Valor INSS","Código do Item","Quantidade","Valor Unitário"];
 function escritaRowArray(r){
   const row = new Array(28).fill("");
-  row[0]=r.cnpj; row[6]=1; row[7]=r.data?fmtDateBR(r.data):""; row[8]=0; row[9]=r.acumulador; row[10]=9101;
+  row[0]=r.cnpj; row[5]=r.numeroDocumento||""; row[6]=1; row[7]=r.data?fmtDateBR(r.data):""; row[8]=0; row[9]=r.acumulador; row[10]=9101;
   row[11]=r.valorServicos; row[14]=r.valorContabil; row[15]=r.baseCalculo; row[19]=r.valorIRRF;
   return row;
 }
@@ -989,12 +996,13 @@ function renderEscritaTable(){
     <div class="item"><div class="k">Total Valor Serviços</div><div class="v">R$ ${fmtBRL(totalServicos)}</div></div>
   </div>
   <div class="table-wrap"><table class="preview"><thead><tr>
-    <th>Origem</th><th>CNPJ</th><th>Data</th><th>Acumulador</th><th>Valor Serviços</th><th>Base Cálculo</th><th>Valor IRRF</th><th></th>
+    <th>Origem</th><th>CNPJ</th><th>Nº Documento</th><th>Data</th><th>Acumulador</th><th>Valor Serviços</th><th>Base Cálculo</th><th>Valor IRRF</th><th></th>
   </tr></thead><tbody>`;
   escritaRows.forEach((r,i)=>{
     html += `<tr class="${r.data?'':'flag'}">
       <td>${r.origem}</td>
       <td class="cell"><input class="cell-input wide" value="${r.cnpj}" onchange="escritaRows[${i}].cnpj=this.value"></td>
+      <td class="cell"><input class="cell-input" style="width:90px" value="${r.numeroDocumento||''}" onchange="escritaRows[${i}].numeroDocumento=this.value"></td>
       <td class="cell"><input class="cell-input" value="${r.data?fmtDateBR(r.data):''}" onchange="escritaRows[${i}].data=brDateToParts(this.value)"></td>
       <td class="cell"><input class="cell-input num" style="width:50px" value="${r.acumulador}" onchange="escritaRows[${i}].acumulador=this.value"></td>
       <td class="cell"><input class="cell-input num" value="${fmtBRL(r.valorServicos)}" onchange="updateEscritaValor(${i},'valorServicos',this.value)"></td>
@@ -1015,7 +1023,7 @@ function updateEscritaValor(i, field, val){ const n=parseBRL(val); escritaRows[i
 function downloadEscritaXlsx(){ downloadXlsx("escrita_holding.xlsx", [ESCRITA_HEADER, ...escritaRows.map(escritaRowArray)], "Escrita"); }
 function downloadEscritaTxt(){
   const moneyIdx = [11,14,15,19];
-  const lines = escritaRows.map(r=> escritaRowArray(r).map((v,i)=> moneyIdx.includes(i) ? fmtValorTxt(v) : v).join(";"));
+  const lines = escritaRows.map(r=> escritaRowArray(r).map((v,i)=> moneyIdx.includes(i) ? fmtValorTxt(v) : stripAccentsForTxt(v)).join(";"));
   downloadText("ServicoPrest.txt", lines.join("\r\n"));
 }
 
@@ -1060,7 +1068,7 @@ function renderLancTable(){
 }
 function downloadLancXlsx(){ downloadXlsx("lancamentos_holding.xlsx", [LANC_HEADER, ...lancRows.map(lancRowArray)], "Lancamentos"); }
 function downloadLancTxt(){
-  const lines = lancRows.map(r=> lancRowArray(r).map((v,i)=> i===3 ? fmtValorTxt(v) : v).join(";"));
+  const lines = lancRows.map(r=> lancRowArray(r).map((v,i)=> i===3 ? fmtValorTxt(v) : stripAccentsForTxt(v)).join(";"));
   downloadText("lanctos.txt", lines.join("\r\n"));
 }
 
