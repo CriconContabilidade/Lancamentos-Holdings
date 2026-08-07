@@ -243,19 +243,31 @@ let currentEmpresa = null;
    LANÇAMENTOS PADRÕES — seed compartilhado
    ========================================================================= */
 const PADROES_SEED = [
-  {codigo:1, descricao:"Pagamento honorários contábeis", keywords:["PJBANK","JACHELINE DAMASIO"], debito:434, credito:7, hist:7},
-  {codigo:2, descricao:"Aplicação financeira", keywords:["APLICACAO FINANCEIRA","APLICAÇÃO FINANCEIRA"], debito:20, credito:7, hist:80},
+  {codigo:1, descricao:"Pagamento honorários contábeis", keywords:["PJBANK","JACHELINE DAMASIO","CRICON"], debito:434, credito:7, hist:7},
+  {codigo:2, descricao:"Aplicação financeira", keywords:["APLICACAO FINANCEIRA","APLICAÇÃO FINANCEIRA","APLIC FINANC"], debito:20, credito:7, hist:80},
   {codigo:3, descricao:"Dividendos recebidos - GT Clínica", keywords:["GT CLINICA","GT CLÍNICA"], debito:7, credito:13, hist:1},
-  {codigo:4, descricao:"Ignorar — resgate de aplicação (tratado na função dedicada de Resgate Unicred)", keywords:["RESGATE APLICACAO FINANCEIRA","RESGATE APLICAÇÃO FINANCEIRA"], ignorar:true},
-  {codigo:5, descricao:"Dividendos recebidos - LTA (transferência doc. 1662058)", keywords:["1662058"], debito:7, credito:13, hist:1, empresas:["LTA"]},
+  {codigo:4, descricao:"Ignorar — resgate de aplicação (tratado na função dedicada de Resgate Unicred)", keywords:["RESGATE APLICACAO FINANCEIRA","RESGATE APLICAÇÃO FINANCEIRA","RESG APLIC FINANC"], ignorar:true},
+  {codigo:5, descricao:"Dividendos recebidos - GT Clínica (transferência doc. 1662058)", keywords:["1662058"], debito:7, credito:13, hist:1},
 ];
 
+// Faz merge aditivo do seed com o que já está salvo no navegador — nunca
+// remove nada que o usuário tenha cadastrado/editado, só adiciona
+// palavras-chave novas e padrões novos que ainda não existem por código.
 function loadPadroes(){
   const raw = localStorage.getItem("holdings_padroes");
-  if(raw) return JSON.parse(raw);
-  const seeded = PADROES_SEED.map(p=>({...p}));
-  savePadroes(seeded);
-  return seeded;
+  let list = raw ? JSON.parse(raw) : [];
+  PADROES_SEED.forEach(seed=>{
+    const existing = list.find(p=>p.codigo===seed.codigo);
+    if(!existing){ list.push({...seed}); return; }
+    const kws = new Set(existing.keywords||[]);
+    (seed.keywords||[]).forEach(k=>kws.add(k));
+    existing.keywords = Array.from(kws);
+    if(seed.codigo===5 && Array.isArray(existing.empresas) && existing.empresas.length===1 && existing.empresas[0]==="LTA"){
+      delete existing.empresas; // generalizado pra todas as empresas (doc. também visto na GBG)
+    }
+  });
+  savePadroes(list);
+  return list;
 }
 function savePadroes(list){ localStorage.setItem("holdings_padroes", JSON.stringify(list)); }
 let padroesDB = loadPadroes();
@@ -327,6 +339,20 @@ function brDateToParts(str){
 }
 function fmtDateBR(dt){ if(!dt) return ""; return `${String(dt.d).padStart(2,"0")}/${String(dt.m).padStart(2,"0")}/${dt.y}`; }
 function dateKey(dt){ if(!dt) return ""; return `${dt.y}-${String(dt.m).padStart(2,"0")}-${String(dt.d).padStart(2,"0")}`; }
+function dateCompare(a,b){ if(!a||!b) return 0; return (a.y-b.y)||(a.m-b.m)||(a.d-b.d); }
+function extrairPeriodo(lines){
+  const texto = lines.join(" ");
+  const m = texto.match(/Per[íi]odo\s*de:?\s*(\d{2}\/\d{2}\/\d{4})\s*a\s*(\d{2}\/\d{2}\/\d{4})/i);
+  if(!m) return null;
+  return { inicio: brDateToParts(m[1]), fim: brDateToParts(m[2]) };
+}
+// Diferentes cooperativas Unicred usam layouts de rótulo diferentes ("RESGATE
+// APLICACAO FINANCEIRA" vs "RESG APLIC FINANC") — checa fragmentos-chave em
+// vez do texto inteiro pra reconhecer as duas variantes.
+function pareceResgateAplicacao(desc){
+  const n = normalizeText(desc);
+  return /RESG/.test(n) && /APLIC/.test(n) && /FINANC/.test(n);
+}
 
 function downloadText(filename, content, mime){
   const blob = new Blob([content], {type: mime||"text/plain;charset=utf-8"});
@@ -518,7 +544,7 @@ let arquivos = {};
 function resetEmpresaState(){ arquivos = { resgateUnicred:null, extratoUnicred:null, notasCorretagem:[], contaInvestimento:null, contaRemunera:null }; }
 
 const DOCS_COMUNS = [
-  {key:"resgateUnicred", label:"Resgate de Aplicação Unicred (opcional)", desc:"Demonstrativo de Rentabilidade — só de referência, a ferramenta pede pra confirmar os valores na tela", multiple:false},
+  {key:"resgateUnicred", label:"Resgate de Aplicação Unicred", desc:"Demonstrativo de Rentabilidade / Extrato de Aplicação — se não carregar, pede pra confirmar Rendimento Pago e IR Retido na tela", multiple:false},
   {key:"extratoUnicred", label:"Extrato Unicred", desc:"Extrato de conta corrente do período", multiple:false},
 ];
 const DOCS_BTG = [
@@ -602,32 +628,140 @@ async function processarEmpresa(){
 /* =========================================================================
    FUNÇÃO 1+2 — Resgate de Aplicação Unicred + Extrato Unicred
    ========================================================================= */
-// O demonstrativo "Lista de títulos" desenha os títulos em COLUNAS lado a
-// lado (não uma linha por título) e os rótulos das linhas quebram em várias
-// linhas de texto — layout muito frágil pra extrair com regex com segurança
-// num documento fiscal. Por isso o Rendimento Pago / IR Retido de cada
-// resgate é semi-automático: a ferramenta já acha a data e o valor do
-// resgate (confiável, vem do Extrato Unicred) e só pede pra confirmar os
-// 2 números lidos no demonstrativo.
+// Cooperativas Unicred diferentes usam layouts diferentes de extrato. Duas
+// variantes conhecidas até agora:
+//  A) "Data Lançamentos Valor (R$) Saldo (R$)" — valor único com sinal,
+//     descrição pode quebrar em várias linhas com a data no meio.
+//  B) "Data [Nr.Documento] Histórico Débito Crédito Saldo" — três colunas
+//     numéricas, sempre numa linha só.
+const EXTRATO_DCS_HEADER_RE = /^Data\s+.*D[ée]bito\s+Cr[ée]dito\s+Saldo/i;
+const EXTRATO_DCS_ROW_RE = /^(\d{2}\/\d{2}\/\d{4})\s+(.+?)\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+(-?[\d.]+,\d{2})$/;
+function parseExtratoFormatoDCS(lines){
+  const out = [];
+  lines.forEach(line=>{
+    const m = line.match(EXTRATO_DCS_ROW_RE);
+    if(!m) return;
+    const [,dataStr,desc,debitoStr,creditoStr] = m;
+    const debito = parseBRL(debitoStr)||0, credito = parseBRL(creditoStr)||0;
+    out.push({ data: brDateToParts(dataStr), descricao: desc.trim(), valor: credito-debito });
+  });
+  return out;
+}
 async function parseExtratoUnicred(file){
   const pages = await extractPdfAllLines(file);
   const lines = pages.flat();
+  if(lines.some(l=>EXTRATO_DCS_HEADER_RE.test(l))){
+    return parseExtratoFormatoDCS(lines);
+  }
   const docNameMap = buildDocNameMap(lines);
   const blocks = parseUnicredCheckingBlocks(lines);
   return blocks.map(b=> ({...b, descricao: descComDocPropagado(b.descricao, docNameMap)}));
 }
-async function processarResgateEExtratoUnicred(){
-  const extrato = await parseExtratoUnicred(arquivos.extratoUnicred);
-  extrato.filter(t=> normalizeText(t.descricao).includes("RESGATE APLICACAO FINANCEIRA")).forEach(t=>{
-    revisaoResgate.push({ data:t.data, descricao:t.descricao, valorResgateBruto:t.valor, rendimentoPago:null, irRetido:null });
+
+// --- Resgate: formato "Lista de títulos" (transposto em colunas) ---
+// Os títulos ficam em colunas lado a lado; achamos a posição X de cada
+// código de título e lemos, na mesma faixa de X, o valor da linha
+// "Rendimento Pago" e da linha "IR Retido" (ambas identificadas pelo
+// rótulo de texto, que aqui extrai normalmente — só o layout é atípico).
+function valorMaisProximoDeX(itens, x, tolerancia){
+  let melhor=null, menorDist=Infinity;
+  itens.forEach(it=>{ const d=Math.abs(it.x-x); if(d<tolerancia && d<menorDist){ menorDist=d; melhor=it; } });
+  return melhor;
+}
+async function parseResgateFormatoTransposto(file){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  const out = [];
+  for(let p=1;p<=pdf.numPages;p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const itens = content.items.map(it=>({x:it.transform[4], y:it.transform[5], text:it.str}));
+    const titulos = itens.filter(it=>/^\d{8,}$/.test(it.text.trim()));
+    const pagoLabel = itens.find(it=>it.text.trim()==='Pago');
+    const irLabel = itens.find(it=>it.text.trim()==='IR');
+    if(!titulos.length || !pagoLabel || !irLabel) continue;
+    let irRetidoLabel=null, menorDist=Infinity;
+    itens.filter(it=>it.text.trim()==='Retido').forEach(c=>{ const d=Math.abs(c.y-irLabel.y); if(d<menorDist){menorDist=d;irRetidoLabel=c;} });
+    const linhaPago = itens.filter(it=>Math.abs(it.y-pagoLabel.y)<15 && /^-?[\d.]+,\d{2}$/.test(it.text.trim()));
+    const linhaIr = irRetidoLabel ? itens.filter(it=>Math.abs(it.y-irRetidoLabel.y)<15 && /^-?[\d.]+,\d{2}$/.test(it.text.trim())) : [];
+    titulos.forEach(t=>{
+      const rp = valorMaisProximoDeX(linhaPago, t.x, 5);
+      const ir = valorMaisProximoDeX(linhaIr, t.x, 5);
+      const rendimentoPago = rp?parseBRL(rp.text):0;
+      const irRetido = ir?parseBRL(ir.text):0;
+      if(rendimentoPago>0) out.push({ titulo:t.text.trim(), rendimentoPago, irRetido });
+    });
+  }
+  return out;
+}
+
+// --- Resgate: formato "Extrato de Aplicação" (uma página por título, com
+// razão normal Data/Histórico/Débito/Crédito/Saldo) — cada resgate tributado
+// já vem com sua própria linha "DÉBITO IRRF" na mesma data.
+const RESGATE_LEDGER_IRRF_RE = /^(\d{2}\/\d{2}\/\d{4})\s+D[ÉE]BITO IRRF\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+(-?[\d.]+,\d{2})$/i;
+async function parseResgateFormatoLedger(file, periodo){
+  const pages = await extractPdfAllLines(file);
+  const lines = pages.flat();
+  const out = [];
+  lines.forEach(line=>{
+    const m = line.match(RESGATE_LEDGER_IRRF_RE);
+    if(!m) return;
+    const data = brDateToParts(m[1]);
+    const ir = parseBRL(m[2]);
+    if(!ir || ir<=0) return;
+    if(periodo && (dateCompare(data,periodo.inicio)<0 || dateCompare(data,periodo.fim)>0)) return;
+    out.push({ data, rendimentoPago: Math.round((ir/0.225)*100)/100, irRetido: ir });
   });
+  return out;
+}
+
+async function processarResgateEExtratoUnicred(){
+  const pagesExtrato = await extractPdfAllLines(arquivos.extratoUnicred);
+  const linesExtrato = pagesExtrato.flat();
+  const periodo = extrairPeriodo(linesExtrato);
+  const extrato = await parseExtratoUnicred(arquivos.extratoUnicred);
+  const resgateLines = extrato.filter(t=> pareceResgateAplicacao(t.descricao));
+
+  let automaticos = [];
+  if(arquivos.resgateUnicred){
+    const pagesResgate = await extractPdfAllLines(arquivos.resgateUnicred);
+    const linesResgate = pagesResgate.flat();
+    if(linesResgate.some(l=>/EXTRATO DE APLICA[ÇC][ÃA]O/i.test(l))){
+      automaticos = await parseResgateFormatoLedger(arquivos.resgateUnicred, periodo);
+    } else if(linesResgate.some(l=>/Lista de t[íi]tulos|Demonstrativo de Rentabilidade/i.test(l))){
+      const titulos = await parseResgateFormatoTransposto(arquivos.resgateUnicred);
+      // casa cada título com a linha de resgate do extrato (mesma lógica de
+      // sempre: o doc do extrato é o código do título sem o último dígito,
+      // com o valor batendo como conferência extra).
+      automaticos = titulos.map(t=>{
+        const match = resgateLines.find(r => normalizeText(r.descricao).includes(t.titulo.slice(0,-1)))
+                    || resgateLines.find(r => Math.abs(r.valor - t.rendimentoPago) < 0.01 || Math.abs(Math.abs(r.valor) - t.rendimentoPago) < 0.01);
+        return { data: match ? match.data : null, rendimentoPago: t.rendimentoPago, irRetido: t.irRetido, titulo: t.titulo };
+      });
+    }
+  }
+
+  if(automaticos.length){
+    automaticos.forEach(a=>{
+      escritaRows.push({
+        cnpj: CNPJ_UNICRED_CRICIUMA, data: a.data, acumulador: 51,
+        valorServicos: a.rendimentoPago, valorContabil: a.rendimentoPago, baseCalculo: a.rendimentoPago, valorIRRF: a.irRetido,
+        origem: "Resgate Unicred" + (a.titulo?` (título ${a.titulo})`:""),
+      });
+      if(!a.data) ignoradas.push({origem:"Resgate Unicred", data:null, descricao:`Não achei a data no extrato pro título ${a.titulo} — confira antes de exportar.`, valor:a.rendimentoPago});
+    });
+  } else {
+    // Não achei o demonstrativo ou não reconheci o layout — cai pra revisão manual.
+    resgateLines.forEach(t=>{
+      revisaoResgate.push({ data:t.data, descricao:t.descricao, valorResgateBruto:t.valor, rendimentoPago:null, irRetido:null });
+    });
+  }
   await processarExtratoUnicred(null, extrato);
 }
 async function processarExtratoUnicred(file, jaExtraido){
-  const txns = jaExtraido && jaExtraido.length ? jaExtraido : await parseExtratoUnicred(file);
+  const txns = jaExtraido!=null ? jaExtraido : await parseExtratoUnicred(file);
   txns.forEach(txn=>{
-    const norm = normalizeText(txn.descricao);
-    if(norm.includes("RESGATE APLICACAO FINANCEIRA")) return; // já tratado na revisão de resgate
+    if(pareceResgateAplicacao(txn.descricao)) return; // já tratado no resgate automático/revisão
     const socio = matchSocio(txn.descricao, currentEmpresa);
     if(socio && txn.valor<0){
       lancRows.push({data:txn.data, debito:socio.contaLucros, credito:currentEmpresa.contaBanco, valor:Math.abs(txn.valor), codHist:null, complemento:txn.descricao, origem:"Extrato Unicred — distribuição de lucros"});
