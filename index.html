@@ -251,6 +251,7 @@ const PADROES_SEED = [
   {codigo:5, descricao:"Dividendos recebidos - GT Clínica (transferência doc. 1662058)", keywords:["1662058"], debito:7, credito:13, hist:1},
   {codigo:6, descricao:"Distribuição de lucros - GBG (transferência doc. 1067737) — confira, às vezes é ressarcimento de despesa (ex. combustível) e não distribuição", keywords:["1067737"], debito:22, credito:7, hist:null, empresas:["GBG"]},
   {codigo:7, descricao:"Empréstimo de mútuo com Guidi Administradora de Bens - GBG (transferência doc. 5498147)", keywords:["5498147"], debito:34, credito:7, hist:null, empresas:["GBG"]},
+  {codigo:8, descricao:"Distribuição de lucros - LTA (transferência doc. 1540947)", keywords:["1540947"], debito:22, credito:7, hist:null, empresas:["LTA"]},
 ];
 
 // Faz merge aditivo do seed com o que já está salvo no navegador — nunca
@@ -794,11 +795,58 @@ function parseExtratoFormatoDCS(lines){
   });
   return out;
 }
+// Variante B' do mesmo layout (mesma cooperativa "Unicred Centro-Sul", mas
+// cada lançamento sai espalhado em várias linhas visuais — data/doc numa
+// linha, descrição noutra, valor e saldo em Y ligeiramente diferentes —
+// então o texto nunca forma UMA linha só e a regex de linha única não bate
+// nada. Aqui não dá pra confiar na ordem das "linhas" já juntadas (o Y de
+// cada pedaço varia poucos pontos dentro da mesma linha visual, então a
+// função genérica de junção às vezes separa/reordena); em vez disso lemos
+// os itens de texto crus do PDF (com X e Y) e decidimos a coluna de cada
+// valor pela posição X mais próxima do cabeçalho (Débito/Crédito/Saldo),
+// e agrupamos por proximidade de Y a partir de cada data encontrada.
+async function parseExtratoFormatoDCSPosicional(file){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  const out = [];
+  for(let p=1;p<=pdf.numPages;p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const items = content.items.map(it=>({str:it.str.trim(), x:it.transform[4], y:it.transform[5]})).filter(it=>it.str);
+    const colDebito = items.find(it=>it.str==="Débito");
+    const colCredito = items.find(it=>it.str==="Crédito");
+    const colSaldo = items.find(it=>it.str==="Saldo");
+    if(!colDebito || !colCredito || !colSaldo) continue;
+    const dateItems = items.filter(it=>/^\d{2}\/\d{2}\/\d{4}$/.test(it.str)).sort((a,b)=>b.y-a.y);
+    dateItems.forEach(dItem=>{
+      const grupo = items.filter(it=> it!==dItem && it.y<=dItem.y+2 && it.y>=dItem.y-8);
+      const docItem = grupo.find(it=>/^\d+$/.test(it.str) && it.x<130);
+      const numItens = grupo.filter(it=>/^-?[\d.]+,\d{2}$/.test(it.str));
+      const textoDesc = grupo.filter(it=> it!==docItem && !numItens.includes(it)).map(it=>it.str).join(" ").replace(/\s+/g," ").trim();
+      // Inclui o nº do documento na descrição (convenção "( Doc.: NNN )" já
+      // usada no resto da ferramenta) pra manter o casamento com padrões
+      // cadastrados por número de documento (ex. distribuição de lucros).
+      const desc = docItem ? `${textoDesc} ( Doc.: ${docItem.str} )` : textoDesc;
+      let valor = null;
+      numItens.forEach(n=>{
+        const dist = {d:Math.abs(n.x-colDebito.x), c:Math.abs(n.x-colCredito.x), s:Math.abs(n.x-colSaldo.x)};
+        const perto = Object.keys(dist).reduce((a,b)=> dist[a]<=dist[b]?a:b);
+        if(perto==="d") valor = -parseBRL(n.str);
+        else if(perto==="c") valor = parseBRL(n.str);
+      });
+      if(valor==null || !textoDesc) return; // linha sem valor reconhecível (ex.: Saldo Anterior) — ignora
+      out.push({ data: brDateToParts(dItem.str), descricao: desc, valor });
+    });
+  }
+  return out;
+}
 async function parseExtratoUnicred(file){
   const pages = await extractPdfAllLines(file);
   const lines = pages.flat();
   if(lines.some(l=>EXTRATO_DCS_HEADER_RE.test(l))){
-    return parseExtratoFormatoDCS(lines);
+    const linhaUnica = parseExtratoFormatoDCS(lines);
+    if(linhaUnica.length) return linhaUnica;
+    return await parseExtratoFormatoDCSPosicional(file); // mesmo cabeçalho, mas lançamentos espalhados em várias linhas
   }
   const docNameMap = buildDocNameMap(lines);
   const blocks = parseUnicredCheckingBlocks(lines);
