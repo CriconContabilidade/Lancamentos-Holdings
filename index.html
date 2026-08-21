@@ -251,7 +251,11 @@ const PADROES_SEED = [
   {codigo:5, descricao:"Dividendos recebidos - GT Clínica (transferência doc. 1662058)", keywords:["1662058"], debito:7, credito:13, hist:1},
   {codigo:6, descricao:"Distribuição de lucros - GBG (transferência doc. 1067737) — confira, às vezes é ressarcimento de despesa (ex. combustível) e não distribuição", keywords:["1067737"], debito:22, credito:7, hist:null, empresas:["GBG"]},
   {codigo:7, descricao:"Empréstimo de mútuo com Guidi Administradora de Bens - GBG (transferência doc. 5498147)", keywords:["5498147"], debito:34, credito:7, hist:null, empresas:["GBG"]},
-  {codigo:8, descricao:"Distribuição de lucros - LTA (transferência doc. 1540947)", keywords:["1540947"], debito:22, credito:7, hist:null, empresas:["LTA"]},
+  {codigo:8, descricao:"Distribuição de lucros - LTA (transferência doc. 1540947)", keywords:["1540947"], empresas:["LTA"],
+    lancamentos:[
+      {debito:22, credito:7, hist:4},
+      {debito:262, credito:22, hist:2},
+    ]},
   {codigo:9, descricao:"Distribuição de lucros - EBR (transferência doc. 869872)", keywords:["869872"], empresas:["EBR"],
     lancamentos:[
       {debito:22, credito:7, complemento:"PAGAMENTO REF. DISTRIBUIÇÃO DE LUCROS A SÓCIA ERICA BARREIROS"},
@@ -273,6 +277,13 @@ function loadPadroes(){
     existing.keywords = Array.from(kws);
     if(seed.codigo===5 && Array.isArray(existing.empresas) && existing.empresas.length===1 && existing.empresas[0]==="LTA"){
       delete existing.empresas; // generalizado pra todas as empresas (doc. também visto na GBG)
+    }
+    // Upgrade de padrão que passou a gerar múltiplos lançamentos (campo
+    // "lancamentos") depois de já ter sido salvo no navegador com o
+    // formato antigo (debito/credito/hist único) — não existe UI pra
+    // editar "lancamentos" ainda, então isso nunca é uma edição do usuário.
+    if(seed.lancamentos && !existing.lancamentos){
+      existing.lancamentos = seed.lancamentos.map(l=>({...l}));
     }
   });
   savePadroes(list);
@@ -973,8 +984,8 @@ async function processarExtratoUnicred(file, jaExtraido){
       if(p.lancamentos){
         // Padrão que gera mais de um lançamento de uma vez (ex.: o pagamento
         // em si + a provisão correspondente), cada um com seu próprio
-        // histórico em texto livre em vez de um código numérico.
-        p.lancamentos.forEach(l=> lancRows.push({data:txn.data, debito:l.debito, credito:l.credito, valor:Math.abs(txn.valor), codHist:null, complemento:l.complemento, origem:"Extrato Unicred — padrão: "+p.descricao}));
+        // código de histórico numérico e/ou complemento em texto livre.
+        p.lancamentos.forEach(l=> lancRows.push({data:txn.data, debito:l.debito, credito:l.credito, valor:Math.abs(txn.valor), codHist:l.hist??null, complemento:l.complemento??null, origem:"Extrato Unicred — padrão: "+p.descricao}));
         return;
       }
       lancRows.push({data:txn.data, debito:p.debito, credito:p.credito, valor:Math.abs(txn.valor), codHist:p.hist, complemento:null, origem:"Extrato Unicred — padrão: "+p.descricao});
