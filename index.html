@@ -210,6 +210,7 @@ code{background:var(--paper);padding:1px 5px;border-radius:3px;font-family:'IBM 
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
@@ -432,6 +433,100 @@ async function extractPdfAllLines(file){
     pages.push(await extractPdfPageLines(pdf, p));
   }
   return pages;
+}
+
+// Igual extractPdfPageLines, mas guarda página/Y de cada linha — precisamos
+// disso pra depois recortar a imagem daquele trecho exato e tentar OCR nos
+// PDFs (ex. Conta Investimento BTG) que não têm rótulo de texto legível.
+async function extractPdfPageLinesPos(pdf, pageNum){
+  const page = await pdf.getPage(pageNum);
+  const content = await page.getTextContent();
+  const rows = {};
+  content.items.forEach(it=>{
+    const y = Math.round(it.transform[5]);
+    if(!rows[y]) rows[y] = [];
+    rows[y].push({x:it.transform[4], w:it.width||0, text:it.str});
+  });
+  const ys = Object.keys(rows).map(Number).sort((a,b)=>b-a);
+  return ys.map(y=>{
+    const items = rows[y].sort((a,b)=>a.x-b.x);
+    let line = "", prevEnd = null;
+    items.forEach(it=>{
+      if(prevEnd!=null && (it.x - prevEnd) > 1.2) line += " ";
+      line += it.text;
+      prevEnd = it.x + it.w;
+    });
+    return { pagina: pageNum, y, texto: line.replace(/\s+/g," ").trim() };
+  }).filter(l=>l.texto.length>0);
+}
+async function extractPdfAllLinesWithPos(file){
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+  const out = [];
+  for(let p=1;p<=pdf.numPages;p++) out.push(...(await extractPdfPageLinesPos(pdf, p)));
+  return out;
+}
+
+/* =========================================================================
+   OCR (Tesseract.js) — só pra relatórios cuja camada de texto não traz
+   rótulo nenhum (ex. Conta Investimento BTG). Renderiza a página numa
+   resolução alta, recorta uma faixa horizontal em volta do Y da linha e
+   roda o reconhecimento nessa faixa só.
+   ========================================================================= */
+let _ocrWorkerPromise = null;
+function getOcrWorker(){
+  if(!_ocrWorkerPromise) _ocrWorkerPromise = Tesseract.createWorker('por');
+  return _ocrWorkerPromise;
+}
+async function renderPaginaCanvas(pdf, pagina, scale){
+  const page = await pdf.getPage(pagina);
+  const viewport = page.getViewport({scale});
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width; canvas.height = viewport.height;
+  const ctx = canvas.getContext('2d');
+  await page.render({canvasContext: ctx, viewport}).promise;
+  return {canvas, viewport};
+}
+// cacheRenders (opcional) guarda o canvas já renderizado de cada página, pra
+// não desenhar a MESMA página de novo a cada linha — só a primeira linha de
+// cada página paga o custo do render, as outras só recortam.
+async function recortarFaixa(pdf, pagina, y, scale, alturaPdf, cacheRenders){
+  let render = cacheRenders && cacheRenders[pagina];
+  if(!render){
+    render = await renderPaginaCanvas(pdf, pagina, scale);
+    if(cacheRenders) cacheRenders[pagina] = render;
+  }
+  const {canvas, viewport} = render;
+  const [, vy] = viewport.convertToViewportPoint(0, y);
+  const alturaPx = alturaPdf * scale;
+  const yTopo = Math.max(0, vy - alturaPx/2);
+  // Só precisamos da faixa data+descrição — cortar fora as colunas de valor
+  // à direita deixa a imagem mais simples e o OCR roda bem mais rápido.
+  const largura = Math.min(canvas.width, 1500*scale/4);
+  const cropCanvas = document.createElement('canvas');
+  cropCanvas.width = largura;
+  cropCanvas.height = alturaPx;
+  cropCanvas.getContext('2d').drawImage(canvas, 0, yTopo, largura, alturaPx, 0, 0, largura, alturaPx);
+  return cropCanvas;
+}
+async function ocrLinha(pdf, pagina, y, cacheRenders){
+  const cropCanvas = await recortarFaixa(pdf, pagina, y, 4, 16, cacheRenders);
+  const worker = await getOcrWorker();
+  const { data: { text } } = await worker.recognize(cropCanvas);
+  return text;
+}
+// De-para tosco: o OCR não precisa ser perfeito, só bater um fragmento
+// característico de cada categoria conhecida.
+function categoriaPorTextoOcr(texto){
+  const n = normalizeText(texto);
+  if(/TRANSFEREN/.test(n)) return "transferencia";
+  if(/EMISS[ÃA]O/.test(n) && /CDB/.test(n)) return "emissao_cdb";
+  if(/CORRETAGEM/.test(n) && /ALUGUEL/.test(n)) return "corretagem_aluguel";
+  if(/TAXA/.test(n) && /REMUNERA/.test(n)) return "taxa_remuneracao";
+  if(/\bIR\b/.test(n) && /(BTC|REMUNERA)/.test(n)) return "ir_remuneracao";
+  if(/IOF/.test(n) && /CDB/.test(n)) return "iof_cdb";
+  if((/VENDA/.test(n) && /CDB/.test(n)) || (/IRRF/.test(n) && /CDB/.test(n)) || (/LIQ/.test(n) && /BOLSA/.test(n) && /OPERA/.test(n))) return "ignorar";
+  return "";
 }
 
 // Extratos Unicred/BTG às vezes desenham a data e os valores no MEIO de um
@@ -869,8 +964,8 @@ async function processarNotaCorretagem(file){
    FUNÇÃO 4 — Conta Investimento BTG (CDB automático / Aluguel e Conta Corrente semi-automáticos)
    ========================================================================= */
 async function processarContaInvestimento(file){
-  const pages = await extractPdfAllLines(file);
-  const lines = pages.flat();
+  const linesPos = await extractPdfAllLinesWithPos(file);
+  const lines = linesPos.map(l=>l.texto);
 
   // --- Renda fixa – Movimentação – CDB (automático: IR>0 = venda/resgate tributado) ---
   // Este relatório usa ano com 2 dígitos (DD/MM/AA). Células vazias (sem IR
@@ -895,13 +990,14 @@ async function processarContaInvestimento(file){
   // Colunas nesta seção não trazem rótulo de texto legível (ver plano) — só
   // conseguimos as colunas numéricas; usuário classifica Empréstimo/Liquidação e ticket.
   const ALUGUEL_ROW = /^(\d{2}\/\d{2}\/\d{2})\s+([\d.]+,\d{2})\s+([\d.]+)\s+([\d.,]+)\s+([\d.,]+)$/;
-  lines.forEach(line=>{
+  lines.forEach((line, idx)=>{
     const m = line.match(ALUGUEL_ROW);
     if(!m) return;
     const [,dataStr,taxaStr,qtdeStr,,valorContratadoStr] = m;
     revisaoAluguel.push({
       data: brDateToParts(dataStr), taxa: parseBRL(taxaStr), quantidade: parseInt(qtdeStr.replace(/\./g,""),10),
       valorContratado: parseBRL(valorContratadoStr), tipo: "", ticket: "CMIN3",
+      pagina: linesPos[idx].pagina, y: linesPos[idx].y,
     });
   });
 
@@ -933,18 +1029,19 @@ async function processarContaInvestimento(file){
     }
   }
   const ccLines = ccRegionStart>=0 ? lines.slice(ccRegionStart, ccRegionEnd) : [];
+  const ccLinesPos = ccRegionStart>=0 ? linesPos.slice(ccRegionStart, ccRegionEnd) : [];
   const ccMatches = [];
-  ccLines.forEach(line=>{
+  ccLines.forEach((line, idx)=>{
     const m = line.match(CC_ROW);
-    if(m) ccMatches.push(m);
+    if(m) ccMatches.push({m, pos: ccLinesPos[idx]});
   });
-  ccMatches.forEach((m)=>{
+  ccMatches.forEach(({m, pos})=>{
     const temSaldo = m[3]!=null;
     const valorAbs = Math.abs(parseBRL(m[2]));
     const éSaldoConhecido = !temSaldo && saldosConhecidos.some(v=>Math.abs(v-valorAbs)<0.005);
     if(éSaldoConhecido) return; // Saldo Anterior / Saldo Final — não é lançamento
     const [,dataStr,valorStr] = m;
-    revisaoContaCorrente.push({ data: brDateToParts(dataStr), valor: parseBRL(valorStr), categoria:"" });
+    revisaoContaCorrente.push({ data: brDateToParts(dataStr), valor: parseBRL(valorStr), categoria:"", pagina: pos.pagina, y: pos.y });
   });
   sugerirClassificacaoRemuneracao(revisaoContaCorrente);
 
@@ -1098,7 +1195,7 @@ function renderRevisaoContaCorrente(){
   if(!el){ el = document.createElement("div"); el.id="revisaoCCBox"; el.className="card"; document.getElementById("screen-empresa").insertBefore(el, document.getElementById("boxIgnorados")); }
   let html = `<div class="section-title">🔎 Conta corrente BTG (Conta Investimento) — classifique cada linha</div>
   <div class="help">Este PDF não traz a descrição de forma legível pelo sistema — escolha a categoria de cada linha (pelo valor e pela ordem, comparando com o extrato original) antes de gerar os lançamentos. Linhas de "Emissão CDB" e "Corretagem aluguel" já cobertas por outra fonte (ex.: Nota de Corretagem) devem ficar como "Ignorar".</div>
-  <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Valor</th><th>Categoria</th><th></th></tr></thead><tbody>`;
+  <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Valor</th><th>Categoria</th><th>Texto lido (OCR)</th><th></th></tr></thead><tbody>`;
   revisaoContaCorrente.forEach((r,i)=>{
     html += `<tr class="${r.categoria?'':'flag'}">
       <td>${fmtDateBR(r.data)}</td>
@@ -1113,18 +1210,50 @@ function renderRevisaoContaCorrente(){
         <option value="iof_cdb" ${r.categoria==='iof_cdb'?'selected':''}>IOF sobre resgate de CDB</option>
         <option value="ignorar" ${r.categoria==='ignorar'?'selected':''}>Já lançado em outro relatório (ignorar)</option>
       </select></td>
+      <td style="font-size:11px;color:var(--ink-soft);max-width:220px;">${r._ocrTexto||''}</td>
       <td><button class="btn small ghost" onclick="revisaoContaCorrente.splice(${i},1);renderRevisaoContaCorrente();">✕</button></td>
     </tr>`;
   });
   html += `</tbody></table></div>
   <div class="btn-row">
     <button class="btn" onclick="aplicarRevisaoContaCorrente()">Gerar lançamentos da conta corrente</button>
+    <button class="btn ghost" onclick="tentarOcrContaCorrente()">🔍 Tentar OCR nas linhas sem categoria</button>
     <button class="btn ghost" onclick="downloadEscritaXlsx()">Baixar planilha Escrita Holding (.xlsx)</button>
     <button class="btn ghost" onclick="downloadEscritaTxt()">Baixar TXT de Serviços</button>
     <button class="btn ghost" onclick="downloadLancXlsx()">Baixar planilha Lançamentos Holding (.xlsx)</button>
     <button class="btn ghost" onclick="downloadLancTxt()">Baixar TXT de Lançamentos</button>
-  </div>`;
+  </div>
+  <div id="ccOcrStatus" class="status-line hidden"></div>`;
   el.innerHTML = html;
+}
+async function tentarOcrContaCorrente(){
+  const status = document.getElementById("ccOcrStatus");
+  const pendentes = revisaoContaCorrente.filter(r=>!r.categoria && r.pagina!=null);
+  if(!pendentes.length){ alert("Não há linhas pendentes com posição conhecida pra tentar OCR (só funciona pra linhas vindas da Conta Investimento BTG)."); return; }
+  if(!arquivos.contaInvestimento){ alert("Recarregue o PDF da Conta Investimento BTG antes de tentar OCR (a ferramenta precisa reabrir o arquivo)."); return; }
+  status.classList.remove("hidden","err");
+  try{
+    const buf = await arquivos.contaInvestimento.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    const ordenadas = [...pendentes].sort((a,b)=> a.pagina-b.pagina); // agrupa por página pra reaproveitar o render
+    const cacheRenders = {};
+    let acertos = 0;
+    for(let i=0;i<ordenadas.length;i++){
+      status.textContent = `Rodando OCR... ${i+1}/${ordenadas.length}`;
+      const r = ordenadas[i];
+      try{
+        const texto = await ocrLinha(pdf, r.pagina, r.y, cacheRenders);
+        const cat = categoriaPorTextoOcr(texto);
+        r._ocrTexto = texto.replace(/\s+/g," ").trim();
+        if(cat){ r.categoria = cat; acertos++; }
+      }catch(e){ console.error("OCR falhou numa linha:", e); }
+    }
+    status.textContent = `OCR concluído: ${acertos} de ${pendentes.length} linha(s) classificada(s). Confira antes de gerar — passe o mouse/clique na linha pra ver o texto lido.`;
+    renderRevisaoContaCorrente();
+  }catch(err){
+    status.classList.add("err"); status.textContent = "Erro no OCR: " + err.message;
+    console.error(err);
+  }
 }
 // Gera lançamento só das linhas já classificadas — o resto continua na
 // tabela pra completar depois, sem travar quem já está pronto. As 3 linhas
