@@ -982,13 +982,19 @@ function renderRevisaoResgate(){
     </tr>`;
   });
   html += `</tbody></table></div>
-  <div class="btn-row"><button class="btn" onclick="aplicarRevisaoResgate()">Gerar lançamento do resgate</button></div>`;
+  <div class="btn-row">
+    <button class="btn" onclick="aplicarRevisaoResgate()">Gerar lançamento do resgate</button>
+    <button class="btn ghost" onclick="downloadEscritaXlsx()">Baixar planilha Escrita Holding (.xlsx)</button>
+    <button class="btn ghost" onclick="downloadEscritaTxt()">Baixar TXT de Serviços</button>
+  </div>`;
   el.innerHTML = html;
 }
+// Gera lançamento só das linhas já preenchidas — as que faltar continuam na
+// tabela pra completar depois, sem travar quem já está pronto.
 function aplicarRevisaoResgate(){
-  const pendentes = revisaoResgate.filter(r=>r.rendimentoPago==null);
-  if(pendentes.length){ alert("Preencha o Rendimento Pago de todas as linhas antes de gerar (IR Retido pode ficar 0 se o título tem menos de 30 dias)."); return; }
-  revisaoResgate.forEach(r=>{
+  const prontos = revisaoResgate.filter(r=>r.rendimentoPago!=null);
+  if(!prontos.length){ alert("Preencha o Rendimento Pago de pelo menos uma linha antes de gerar."); return; }
+  prontos.forEach(r=>{
     const rendimento = r.rendimentoPago;
     const ir = r.irRetido||0;
     escritaRows.push({
@@ -997,7 +1003,7 @@ function aplicarRevisaoResgate(){
       origem: "Resgate Unicred",
     });
   });
-  revisaoResgate = [];
+  revisaoResgate = revisaoResgate.filter(r=>r.rendimentoPago==null);
   renderRevisaoResgate();
   renderEscritaTable();
 }
@@ -1029,13 +1035,19 @@ function renderRevisaoAluguel(){
     </tr>`;
   });
   html += `</tbody></table></div>
-  <div class="btn-row"><button class="btn" onclick="aplicarRevisaoAluguel()">Gerar lançamentos do aluguel</button></div>`;
+  <div class="btn-row">
+    <button class="btn" onclick="aplicarRevisaoAluguel()">Gerar lançamentos do aluguel</button>
+    <button class="btn ghost" onclick="downloadLancXlsx()">Baixar planilha Lançamentos Holding (.xlsx)</button>
+    <button class="btn ghost" onclick="downloadLancTxt()">Baixar TXT de Lançamentos</button>
+  </div>`;
   el.innerHTML = html;
 }
+// Gera lançamento só das linhas já classificadas — o resto continua na
+// tabela pra completar depois, sem travar quem já está pronto.
 function aplicarRevisaoAluguel(){
-  const pendentes = revisaoAluguel.filter(r=>!r.tipo);
-  if(pendentes.length){ alert("Classifique Empréstimo/Liquidação em todas as linhas antes de gerar."); return; }
-  revisaoAluguel.forEach(r=>{
+  const prontos = revisaoAluguel.filter(r=>r.tipo);
+  if(!prontos.length){ alert("Classifique Empréstimo/Liquidação em pelo menos uma linha antes de gerar."); return; }
+  prontos.forEach(r=>{
     const custo = getOrCreateCusto(currentEmpresa.id, r.ticket);
     const unit = custoMedioUnitario(custo);
     const valor = Math.round(r.quantidade*unit*100)/100;
@@ -1049,7 +1061,7 @@ function aplicarRevisaoAluguel(){
         origem:"Conta Investimento BTG — devolução de ações"});
     }
   });
-  revisaoAluguel = [];
+  revisaoAluguel = revisaoAluguel.filter(r=>!r.tipo);
   renderRevisaoAluguel();
   renderLancTable();
 }
@@ -1082,15 +1094,32 @@ function renderRevisaoContaCorrente(){
     </tr>`;
   });
   html += `</tbody></table></div>
-  <div class="btn-row"><button class="btn" onclick="aplicarRevisaoContaCorrente()">Gerar lançamentos da conta corrente</button></div>`;
+  <div class="btn-row">
+    <button class="btn" onclick="aplicarRevisaoContaCorrente()">Gerar lançamentos da conta corrente</button>
+    <button class="btn ghost" onclick="downloadEscritaXlsx()">Baixar planilha Escrita Holding (.xlsx)</button>
+    <button class="btn ghost" onclick="downloadEscritaTxt()">Baixar TXT de Serviços</button>
+    <button class="btn ghost" onclick="downloadLancXlsx()">Baixar planilha Lançamentos Holding (.xlsx)</button>
+    <button class="btn ghost" onclick="downloadLancTxt()">Baixar TXT de Lançamentos</button>
+  </div>`;
   el.innerHTML = html;
 }
+// Gera lançamento só das linhas já classificadas — o resto continua na
+// tabela pra completar depois, sem travar quem já está pronto. As 3 linhas
+// de remuneração (taxa/IR/corretagem) de um mesmo dia formam UMA nota só, então
+// ficam seguradas até não sobrar nenhuma linha sem categoria naquele dia —
+// senão a nota sairia incompleta (faltando taxa ou IR) e não dá pra corrigir depois.
 function aplicarRevisaoContaCorrente(){
-  const pendentes = revisaoContaCorrente.filter(r=>!r.categoria);
-  if(pendentes.length){ alert("Classifique todas as linhas antes de gerar."); return; }
+  const prontos = revisaoContaCorrente.filter(r=>r.categoria);
+  if(!prontos.length){ alert("Classifique pelo menos uma linha antes de gerar."); return; }
+  const remunCategorias = new Set(["taxa_remuneracao","ir_remuneracao","corretagem_aluguel"]);
+  const datasComPendencia = new Set(revisaoContaCorrente.filter(r=>!r.categoria).map(r=>dateKey(r.data)));
+
+  const processadas = [];
   const remuneracaoPorDia = {};
-  revisaoContaCorrente.forEach(r=>{
+  prontos.forEach(r=>{
     const k = dateKey(r.data);
+    if(remunCategorias.has(r.categoria) && datasComPendencia.has(k)) return; // segura — falta classificar outra linha do mesmo dia
+    processadas.push(r);
     if(r.categoria==="taxa_remuneracao"){ remuneracaoPorDia[k] = remuneracaoPorDia[k] || {data:r.data, servico:0, irrf:0, corretagem:0}; remuneracaoPorDia[k].servico += Math.abs(r.valor); }
     else if(r.categoria==="ir_remuneracao"){ remuneracaoPorDia[k] = remuneracaoPorDia[k] || {data:r.data, servico:0, irrf:0, corretagem:0}; remuneracaoPorDia[k].irrf += Math.abs(r.valor); }
     else if(r.categoria==="transferencia"){
@@ -1105,6 +1134,7 @@ function aplicarRevisaoContaCorrente(){
       lancRows.push({data:r.data, debito:385, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"PAGAMENTO REF. IOF SOBRE RESGATE DE CDB", origem:"Conta Investimento BTG — IOF sobre CDB"});
     }
   });
+  if(!processadas.length){ alert("Essas linhas são de remuneração de aluguel e ainda falta classificar outra(s) do mesmo dia — classifique todas as linhas daquele dia (taxa, IR e corretagem, se houver) antes de gerar."); return; }
   // Valor da nota = rendimento líquido de corretagem (a corretagem em si não
   // aparece na nota, só abate o valor). A Base de Cálculo NÃO é igual ao
   // valor da nota — é calculada de trás pra frente a partir do IR, já que o
@@ -1114,7 +1144,8 @@ function aplicarRevisaoContaCorrente(){
     const baseCalculo = Math.round((d.irrf/0.225)*100)/100;
     escritaRows.push({ cnpj: CNPJ_BANCO_BTG, data:d.data, acumulador:52, valorServicos:valorLiquido, valorContabil:valorLiquido, baseCalculo, valorIRRF:d.irrf, origem:"Conta Investimento BTG — remuneração aluguel" });
   });
-  revisaoContaCorrente = [];
+  const jaProcessadas = new Set(processadas);
+  revisaoContaCorrente = revisaoContaCorrente.filter(r=>!jaProcessadas.has(r));
   renderRevisaoContaCorrente();
   renderLancTable();
   renderEscritaTable();
