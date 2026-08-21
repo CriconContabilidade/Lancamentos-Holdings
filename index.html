@@ -356,6 +356,28 @@ function pareceResgateAplicacao(desc){
   return /RESG/.test(n) && /APLIC/.test(n) && /FINANC/.test(n);
 }
 
+// Sugestão automática pra revisão da Conta Corrente BTG: quando um dia tem
+// exatamente 1 valor positivo abaixo de R$80 (taxa) e 2 negativos (o de
+// menor módulo é o IR, o de maior módulo é a corretagem — padrão observado
+// em todos os dias reais de remuneração de aluguel), pré-preenche a
+// categoria. Continua editável — é só um chute inicial pra agilizar; dias
+// com outro formato (mais de 2 negativos, mais de 1 positivo pequeno, etc.)
+// ficam em branco pra classificar manualmente, de propósito.
+function sugerirClassificacaoRemuneracao(linhas){
+  const porDia = {};
+  linhas.forEach(r=>{ (porDia[dateKey(r.data)] = porDia[dateKey(r.data)] || []).push(r); });
+  Object.values(porDia).forEach(grupo=>{
+    const positivos = grupo.filter(r=>r.valor>0 && r.valor<80);
+    const negativos = grupo.filter(r=>r.valor<0 && Math.abs(r.valor)<80);
+    if(positivos.length===1 && negativos.length===2){
+      const [menor, maior] = [...negativos].sort((a,b)=>Math.abs(a.valor)-Math.abs(b.valor));
+      positivos[0].categoria = "taxa_remuneracao";
+      menor.categoria = "ir_remuneracao";
+      maior.categoria = "corretagem_aluguel";
+    }
+  });
+}
+
 function downloadText(filename, content, mime){
   const blob = new Blob([content], {type: mime||"text/plain;charset=utf-8"});
   const a = document.createElement("a");
@@ -924,6 +946,7 @@ async function processarContaInvestimento(file){
     const [,dataStr,valorStr] = m;
     revisaoContaCorrente.push({ data: brDateToParts(dataStr), valor: parseBRL(valorStr), categoria:"" });
   });
+  sugerirClassificacaoRemuneracao(revisaoContaCorrente);
 
   if(!revisaoAluguel.length && !revisaoContaCorrente.length && !lines.some(l=>CDB_ROW.test(l))){
     ignoradas.push({origem:"Conta Investimento BTG", data:null, descricao:"Não reconheci nenhuma linha neste PDF — confira se é o mesmo layout usado no desenvolvimento desta ferramenta.", valor:null});
