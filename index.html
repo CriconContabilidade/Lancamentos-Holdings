@@ -362,7 +362,10 @@ function dateKey(dt){ if(!dt) return ""; return `${dt.y}-${String(dt.m).padStart
 function dateCompare(a,b){ if(!a||!b) return 0; return (a.y-b.y)||(a.m-b.m)||(a.d-b.d); }
 function extrairPeriodo(lines){
   const texto = lines.join(" ");
-  const m = texto.match(/Per[íi]odo\s*de:?\s*(\d{2}\/\d{2}\/\d{4})\s*a\s*(\d{2}\/\d{2}\/\d{4})/i);
+  // Formatos vistos: "Período de: DD/MM/AAAA a DD/MM/AAAA" (extrato),
+  // "Período de DD/MM/AAAA a DD/MM/AAAA" (Demonstrativo/Lista de títulos),
+  // "Período: DD/MM/AAAA - DD/MM/AAAA" (Informativo de Rentabilidade e Saldo).
+  const m = texto.match(/Per[íi]odo\s*:?\s*(?:de:?\s*)?(\d{2}\/\d{2}\/\d{4})\s*(?:a|-)\s*(\d{2}\/\d{2}\/\d{4})/i);
   if(!m) return null;
   return { inicio: brDateToParts(m[1]), fim: brDateToParts(m[2]) };
 }
@@ -926,6 +929,36 @@ async function parseResgateFormatoLedger(file, periodo){
   return out;
 }
 
+// Além do resgate em si (só ocorre quando um título vence/é resgatado), os
+// dois relatórios de rentabilidade têm uma coluna "Rendimento Período" que
+// mostra o rendimento do MÊS TODO, título a título, independente de ter
+// havido resgate — precisa virar um lançamento de rendimento de aplicação
+// financeira (D: Aplicação C: 395) todo mês, mesmo sem nenhum resgate.
+
+// Formato "Lista de títulos" (transposto): a junção genérica de linhas gruda
+// o rótulo "Período" (2ª linha do cabeçalho "Rendimento"/"Período") com o
+// valor do TOTAL geral, que fica na mesma altura visual — conferido batendo
+// a soma dos títulos individuais com esse valor.
+function extrairRendimentoPeriodoTransposto(lines){
+  const linha = lines.find(l=> /^Per[íi]odo\s/.test(l.trim()) && /\d,\d{2}/.test(l));
+  if(!linha) return 0;
+  const m = linha.match(/(-?[\d.]+,\d{2})/);
+  return m ? (parseBRL(m[1])||0) : 0;
+}
+// Formato "Informativo de Rentabilidade e Saldo (IRS)": a linha de total
+// (Pré-Fixados e/ou Pós-Fixados) sai inteira numa linha só; "Rendimento
+// Período" é o 4º valor monetário depois do rótulo.
+function extrairRendimentoPeriodoIRS(lines){
+  let total = 0;
+  lines.forEach(line=>{
+    const m = line.match(/Total de T[íi]tulos:\s*\d+\s+(?:Pr[ée]|P[óo]s)-Fixados\s+(.+)$/i);
+    if(!m) return;
+    const nums = m[1].match(/-?[\d.]+,\d{2}/g);
+    if(nums && nums.length>=4) total += parseBRL(nums[3])||0;
+  });
+  return Math.round(total*100)/100;
+}
+
 async function processarResgateEExtratoUnicred(){
   const pagesExtrato = await extractPdfAllLines(arquivos.extratoUnicred);
   const linesExtrato = pagesExtrato.flat();
@@ -934,9 +967,15 @@ async function processarResgateEExtratoUnicred(){
   const resgateLines = extrato.filter(t=> pareceResgateAplicacao(t.descricao));
 
   let automaticos = [];
+  let rendimentoPeriodo = 0;
+  let periodoRendimento = null;
   if(arquivos.resgateUnicred){
     const pagesResgate = await extractPdfAllLines(arquivos.resgateUnicred);
     const linesResgate = pagesResgate.flat();
+    // O "mês de referência" do rendimento é o período do PRÓPRIO relatório
+    // de rentabilidade, não o do extrato — o extrato às vezes usa uma janela
+    // corrida (ex.: "05/07 a 03/08") em vez do mês fechado.
+    periodoRendimento = extrairPeriodo(linesResgate) || periodo;
     if(linesResgate.some(l=>/EXTRATO DE APLICA[ÇC][ÃA]O/i.test(l))){
       automaticos = await parseResgateFormatoLedger(arquivos.resgateUnicred, periodo);
     } else if(linesResgate.some(l=>/Lista de t[íi]tulos|Demonstrativo de Rentabilidade/i.test(l))){
@@ -949,7 +988,18 @@ async function processarResgateEExtratoUnicred(){
                     || resgateLines.find(r => Math.abs(r.valor - t.rendimentoPago) < 0.01 || Math.abs(Math.abs(r.valor) - t.rendimentoPago) < 0.01);
         return { data: match ? match.data : null, rendimentoPago: t.rendimentoPago, irRetido: t.irRetido, titulo: t.titulo };
       });
+      rendimentoPeriodo = extrairRendimentoPeriodoTransposto(linesResgate);
+    } else if(linesResgate.some(l=>/Informativo de Rentabilidade e Saldo/i.test(l))){
+      rendimentoPeriodo = extrairRendimentoPeriodoIRS(linesResgate);
     }
+  }
+  if(rendimentoPeriodo>0 && periodoRendimento){
+    const mesAno = String(periodoRendimento.fim.m).padStart(2,"0") + "/" + periodoRendimento.fim.y;
+    lancRows.push({
+      data: periodoRendimento.fim, debito: currentEmpresa.contaAplicacao, credito: 395, valor: rendimentoPeriodo, codHist: null,
+      complemento: `VALOR REF. RENDIMENTO DE APLICAÇÃO FINANCEIRA RDC UNICRED ${mesAno}`,
+      origem: "Resgate Unicred — rendimento do período",
+    });
   }
 
   if(automaticos.length){
