@@ -219,7 +219,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs
    ========================================================================= */
 const EMPRESAS = [
   { id:"AFA", nome:"AFA Investimentos", icon:"🏢", cnpj:"66.902.546/0001-46", codigoDominio:357,
-    contaBanco:7, contaAplicacao:20, contaDigital:34, contaCorretagemAluguel:49,
+    contaBanco:7, contaAplicacao:20, contaDigital:34, contaCorretagemAluguel:49, contaDividendosAluguel:67,
     socios:[{token:"ANDRE",nomeCompleto:"André Antonio Althoff",contaLucros:348},
             {token:"FERNANDA",nomeCompleto:"Fernanda Freitas Simon Althoff",contaLucros:22}],
     temBTG:true },
@@ -552,6 +552,7 @@ function categoriaPorTextoOcr(texto){
   if(/TAXA/.test(n) && /REMUNERA/.test(n)) return "taxa_remuneracao";
   if(/\bIR\b/.test(n) && /(BTC|REMUNERA)/.test(n)) return "ir_remuneracao";
   if(/IOF/.test(n) && /CDB/.test(n)) return "iof_cdb";
+  if(/LIQ/.test(n) && /BOLSA/.test(n) && /ALUGUEL/.test(n)) return "dividendos_aluguel";
   if((/VENDA/.test(n) && /CDB/.test(n)) || (/IRRF/.test(n) && /CDB/.test(n)) || (/LIQ/.test(n) && /BOLSA/.test(n) && /OPERA/.test(n))) return "ignorar";
   return "";
 }
@@ -1235,6 +1236,7 @@ function renderRevisaoContaCorrente(){
         <option value="taxa_remuneracao" ${r.categoria==='taxa_remuneracao'?'selected':''}>Taxa remuneração aluguel (serviço)</option>
         <option value="ir_remuneracao" ${r.categoria==='ir_remuneracao'?'selected':''}>IR remuneração aluguel</option>
         <option value="iof_cdb" ${r.categoria==='iof_cdb'?'selected':''}>IOF sobre resgate de CDB</option>
+        <option value="dividendos_aluguel" ${r.categoria==='dividendos_aluguel'?'selected':''}>Dividendos recebidos - Ações alugadas</option>
         <option value="ignorar" ${r.categoria==='ignorar'?'selected':''}>Já lançado em outro relatório (ignorar)</option>
       </select></td>
       <td style="font-size:11px;color:var(--ink-soft);max-width:220px;">${r._ocrTexto||''}</td>
@@ -1311,6 +1313,8 @@ function aplicarRevisaoContaCorrente(){
       lancRows.push({data:r.data, debito:currentEmpresa.contaCorretagemAluguel, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"PAGAMENTO REF. TAXA DE CORRETAGEM NO ALUGUEL DE AÇÕES", origem:"Conta Investimento BTG — corretagem aluguel"});
     } else if(r.categoria==="iof_cdb"){
       lancRows.push({data:r.data, debito:385, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"PAGAMENTO REF. IOF SOBRE RESGATE DE CDB", origem:"Conta Investimento BTG — IOF sobre CDB"});
+    } else if(r.categoria==="dividendos_aluguel"){
+      lancRows.push({data:r.data, debito:currentEmpresa.contaBanco, credito:currentEmpresa.contaDividendosAluguel, valor:Math.abs(r.valor), codHist:null, complemento:"DIVIDENDOS RECEBIDOS DE AÇÕES ALUGADAS", origem:"Conta Investimento BTG — dividendos de ações alugadas"});
     }
   });
   if(!processadas.length){ alert("Essas linhas são de remuneração de aluguel e ainda falta classificar outra(s) do mesmo dia — classifique todas as linhas daquele dia (taxa, IR e corretagem, se houver) antes de gerar."); return; }
