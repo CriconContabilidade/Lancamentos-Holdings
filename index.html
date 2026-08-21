@@ -1091,20 +1091,28 @@ function aplicarRevisaoContaCorrente(){
   const remuneracaoPorDia = {};
   revisaoContaCorrente.forEach(r=>{
     const k = dateKey(r.data);
-    if(r.categoria==="taxa_remuneracao"){ remuneracaoPorDia[k] = remuneracaoPorDia[k] || {data:r.data, servico:0, irrf:0}; remuneracaoPorDia[k].servico += Math.abs(r.valor); }
-    else if(r.categoria==="ir_remuneracao"){ remuneracaoPorDia[k] = remuneracaoPorDia[k] || {data:r.data, servico:0, irrf:0}; remuneracaoPorDia[k].irrf += Math.abs(r.valor); }
+    if(r.categoria==="taxa_remuneracao"){ remuneracaoPorDia[k] = remuneracaoPorDia[k] || {data:r.data, servico:0, irrf:0, corretagem:0}; remuneracaoPorDia[k].servico += Math.abs(r.valor); }
+    else if(r.categoria==="ir_remuneracao"){ remuneracaoPorDia[k] = remuneracaoPorDia[k] || {data:r.data, servico:0, irrf:0, corretagem:0}; remuneracaoPorDia[k].irrf += Math.abs(r.valor); }
     else if(r.categoria==="transferencia"){
       lancRows.push({data:r.data, debito: r.valor<0?34:currentEmpresa.contaBanco, credito: r.valor<0?currentEmpresa.contaBanco:34, valor:Math.abs(r.valor), codHist:null, complemento:"TRANSFERÊNCIA ENTRE CONTAS", origem:"Conta Investimento BTG — transferência entre contas"});
     } else if(r.categoria==="emissao_cdb"){
       lancRows.push({data:r.data, debito:currentEmpresa.contaAplicacao, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"VALOR REF. APLICAÇÃO FINANCEIRA", origem:"Conta Investimento BTG — emissão CDB"});
     } else if(r.categoria==="corretagem_aluguel"){
+      remuneracaoPorDia[k] = remuneracaoPorDia[k] || {data:r.data, servico:0, irrf:0, corretagem:0};
+      remuneracaoPorDia[k].corretagem += Math.abs(r.valor);
       lancRows.push({data:r.data, debito:currentEmpresa.contaCorretagemAluguel, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"PAGAMENTO REF. TAXA DE CORRETAGEM NO ALUGUEL DE AÇÕES", origem:"Conta Investimento BTG — corretagem aluguel"});
     } else if(r.categoria==="iof_cdb"){
       lancRows.push({data:r.data, debito:385, credito:currentEmpresa.contaBanco, valor:Math.abs(r.valor), codHist:null, complemento:"PAGAMENTO REF. IOF SOBRE RESGATE DE CDB", origem:"Conta Investimento BTG — IOF sobre CDB"});
     }
   });
+  // Valor da nota = rendimento líquido de corretagem (a corretagem em si não
+  // aparece na nota, só abate o valor). A Base de Cálculo NÃO é igual ao
+  // valor da nota — é calculada de trás pra frente a partir do IR, já que o
+  // IR é 22,5% da base de cálculo, não do rendimento líquido.
   Object.values(remuneracaoPorDia).forEach(d=>{
-    escritaRows.push({ cnpj: CNPJ_BANCO_BTG, data:d.data, acumulador:52, valorServicos:d.servico, valorContabil:d.servico, baseCalculo:d.servico, valorIRRF:d.irrf, origem:"Conta Investimento BTG — remuneração aluguel" });
+    const valorLiquido = Math.round((d.servico - d.corretagem)*100)/100;
+    const baseCalculo = Math.round((d.irrf/0.225)*100)/100;
+    escritaRows.push({ cnpj: CNPJ_BANCO_BTG, data:d.data, acumulador:52, valorServicos:valorLiquido, valorContabil:valorLiquido, baseCalculo, valorIRRF:d.irrf, origem:"Conta Investimento BTG — remuneração aluguel" });
   });
   revisaoContaCorrente = [];
   renderRevisaoContaCorrente();
