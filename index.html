@@ -1023,11 +1023,10 @@ async function processarExtratoUnicred(file, jaExtraido){
   const txns = jaExtraido!=null ? jaExtraido : await parseExtratoUnicred(file);
   txns.forEach(txn=>{
     if(pareceResgateAplicacao(txn.descricao)) return; // já tratado no resgate automático/revisão
-    const socio = matchSocio(txn.descricao, currentEmpresa);
-    if(socio && txn.valor<0){
-      lancRows.push({data:txn.data, debito:socio.contaLucros, credito:currentEmpresa.contaBanco, valor:Math.abs(txn.valor), codHist:null, complemento:txn.descricao, origem:"Extrato Unicred — distribuição de lucros"});
-      return;
-    }
+    // Padrão específico (por doc./palavra-chave) tem prioridade sobre o
+    // lançamento genérico de sócio — um mesmo doc. pode gerar mais de uma
+    // linha no extrato (ex.: transferência + PIX complementar com o nome
+    // do sócio na descrição), e todas devem seguir o padrão cadastrado.
     const p = matchPadrao(txn.descricao, currentEmpresa.id);
     if(p){
       if(p.ignorar) return;
@@ -1039,6 +1038,11 @@ async function processarExtratoUnicred(file, jaExtraido){
         return;
       }
       lancRows.push({data:txn.data, debito:p.debito, credito:p.credito, valor:Math.abs(txn.valor), codHist:p.hist, complemento:null, origem:"Extrato Unicred — padrão: "+p.descricao});
+      return;
+    }
+    const socio = matchSocio(txn.descricao, currentEmpresa);
+    if(socio && txn.valor<0){
+      lancRows.push({data:txn.data, debito:socio.contaLucros, credito:currentEmpresa.contaBanco, valor:Math.abs(txn.valor), codHist:null, complemento:txn.descricao, origem:"Extrato Unicred — distribuição de lucros"});
       return;
     }
     const debito = txn.valor>0 ? currentEmpresa.contaBanco : null;
