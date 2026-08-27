@@ -97,6 +97,13 @@ input[type=file]{display:none;}
 
 table.preview{width:100%;border-collapse:collapse;font-size:12px;margin-top:8px;}
 table.preview th{text-align:left;padding:7px 8px;border-bottom:1.5px solid var(--rule-strong);font-family:'IBM Plex Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.03em;color:var(--ink-soft);position:sticky;top:0;background:var(--paper-raised);white-space:nowrap;}
+table.preview th.sortable{cursor:pointer;user-select:none;}
+table.preview th.sortable:hover{color:var(--ink);}
+table.preview th.sortable .arrow{color:var(--accent);}
+.table-toolbar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;}
+.table-toolbar input[type=search]{flex:1;max-width:320px;padding:7px 9px;border:1.5px solid var(--rule-strong);border-radius:4px;font-size:13px;font-family:'IBM Plex Sans',sans-serif;background:var(--paper-raised);color:var(--ink);}
+.table-toolbar input[type=search]:focus{outline:none;border-color:var(--ink);}
+.table-toolbar .count{font-size:11.5px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
 table.preview td{padding:6px 8px;border-bottom:1px solid var(--rule);vertical-align:top;}
 table.preview td.num{text-align:right;font-family:'IBM Plex Mono',monospace;white-space:nowrap;}
 table.preview tr.flag{background:var(--amber-bg);}
@@ -1517,21 +1524,61 @@ const LANC_HEADER = ["Data","Débito","Crédito","Valor","Cód. Hist.","Compleme
 function lancRowArray(r){
   return [r.data?fmtDateBR(r.data):"", r.debito||"", r.credito||"", r.valor, r.codHist??"", r.complemento||"", 1, currentEmpresa.codigoDominio, "", ""];
 }
+// Ordenação/filtro genérico da tabela de revisão (mesmo padrão usado nas outras
+// ferramentas do Hub, ex. Lançamentos Bari).
+function makeTableState(){ return {filter:"", sortCol:null, sortDir:1}; }
+function sortValue(v){ return v && typeof v==="object" && "y" in v ? dateKey(v) : v; }
+function filterSortRows(rows, state, getSearchable){
+  let indexed = rows.map((row,idx)=>({row, idx}));
+  const needle = normalizeText((state.filter||"").trim());
+  if(needle) indexed = indexed.filter(({row})=> getSearchable(row).some(v=>normalizeText(String(v??"")).includes(needle)));
+  if(state.sortCol){
+    indexed.sort((a,b)=>{
+      const va = sortValue(a.row[state.sortCol]), vb = sortValue(b.row[state.sortCol]);
+      if(va==null && vb==null) return 0;
+      if(va==null) return 1;
+      if(vb==null) return -1;
+      if(typeof va === "number" && typeof vb === "number") return (va-vb)*state.sortDir;
+      return String(va).localeCompare(String(vb), "pt-BR", {numeric:true})*state.sortDir;
+    });
+  }
+  return indexed;
+}
+function toggleSort(state, col, rerenderFn){
+  if(state.sortCol===col){ state.sortDir *= -1; } else { state.sortCol = col; state.sortDir = 1; }
+  rerenderFn();
+}
+function sortTh(stateVarName, state, col, label, rerenderFnName){
+  const arrow = state.sortCol===col ? `<span class="arrow">${state.sortDir===1?"▲":"▼"}</span>` : "";
+  return `<th class="sortable" onclick="toggleSort(${stateVarName},'${col}',${rerenderFnName})">${label} ${arrow}</th>`;
+}
+let lancTableState = makeTableState();
 function renderLancTable(){
   const box = document.getElementById("boxLanc");
   document.getElementById("boxLanc").classList.toggle("hidden", lancRows.length===0);
   if(!lancRows.length) return;
   const totalValor = lancRows.reduce((s,r)=>s+(r.valor||0),0);
+  const nExcl = lancRows.filter(r=>r.incluir===false).length;
+  const indexed = filterSortRows(lancRows, lancTableState, r=>[r.origem,r.debito,r.credito,r.complemento]);
   let html = `<div class="summary-row">
     <div class="item"><div class="k">Linhas</div><div class="v">${lancRows.length}</div></div>
     <div class="item"><div class="k">Total</div><div class="v">R$ ${fmtBRL(totalValor)}</div></div>
+    <div class="item"><div class="k">Excluídas</div><div class="v">${nExcl}</div></div>
   </div>
+  <div class="table-toolbar"><input type="search" value="${lancTableState.filter}" placeholder="Filtrar por origem, conta ou complemento..." oninput="lancTableState.filter=this.value; renderLancTable();"><span class="count">${indexed.length===lancRows.length?`${lancRows.length} linha(s)`:`${indexed.length} de ${lancRows.length}`}</span></div>
   <div class="table-wrap"><table class="preview"><thead><tr>
-    <th>Origem</th><th>Data</th><th>Débito</th><th>Crédito</th><th>Valor</th><th>Cód.Hist.</th><th>Complemento</th><th></th>
+    <th></th><th>Origem</th>
+    ${sortTh('lancTableState',lancTableState,'data','Data','renderLancTable')}
+    ${sortTh('lancTableState',lancTableState,'debito','Débito','renderLancTable')}
+    ${sortTh('lancTableState',lancTableState,'credito','Crédito','renderLancTable')}
+    ${sortTh('lancTableState',lancTableState,'valor','Valor','renderLancTable')}
+    <th>Cód.Hist.</th><th>Complemento</th><th></th>
   </tr></thead><tbody>`;
-  lancRows.forEach((r,i)=>{
+  indexed.forEach(({row:r, idx:i})=>{
     const sameConta = r.debito!=null && r.credito!=null && String(r.debito)===String(r.credito);
-    html += `<tr class="${(r.flag || sameConta || !r.data)?'flag':''}">
+    const incluida = r.incluir!==false;
+    html += `<tr class="${!incluida?'excluded':(r.flag || sameConta || !r.data)?'flag':''}">
+      <td class="cell" style="text-align:center"><input type="checkbox" ${incluida?'checked':''} onchange="lancRows[${i}].incluir=this.checked;renderLancTable();"></td>
       <td>${r.origem}</td>
       <td class="cell"><input class="cell-input" value="${r.data?fmtDateBR(r.data):''}" onchange="lancRows[${i}].data=brDateToParts(this.value)"></td>
       <td class="cell"><input class="cell-input" style="width:60px" value="${r.debito??''}" onchange="lancRows[${i}].debito=this.value.trim()===''?null:this.value.trim()"></td>
@@ -1549,9 +1596,10 @@ function renderLancTable(){
   </div>`;
   box.innerHTML = html;
 }
-function downloadLancXlsx(){ downloadXlsx("lancamentos_holding.xlsx", [LANC_HEADER, ...lancRows.map(lancRowArray)], "Lancamentos"); }
+function lancRowsParaExportar(){ return lancRows.filter(r=>r.incluir!==false); }
+function downloadLancXlsx(){ downloadXlsx("lancamentos_holding.xlsx", [LANC_HEADER, ...lancRowsParaExportar().map(lancRowArray)], "Lancamentos"); }
 function downloadLancTxt(){
-  const lines = lancRows.map(r=> lancRowArray(r).map((v,i)=> i===3 ? fmtValorTxt(v) : stripAccentsForTxt(v)).join(";"));
+  const lines = lancRowsParaExportar().map(r=> lancRowArray(r).map((v,i)=> i===3 ? fmtValorTxt(v) : stripAccentsForTxt(v)).join(";"));
   downloadText("lanctos.txt", lines.join("\r\n"));
 }
 
