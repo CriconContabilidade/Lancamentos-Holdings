@@ -317,17 +317,29 @@ function savePadroes(list){ localStorage.setItem("holdings_padroes", JSON.string
 let padroesDB = loadPadroes();
 
 /* =========================================================================
-   CUSTO MÉDIO DE AÇÕES — seed AFA/CMIN3 (conforme Razão fornecido)
+   CUSTO MÉDIO DE AÇÕES — seed AFA (conforme plano de contas fornecido)
    ========================================================================= */
 const CUSTO_SEED = [
   {empresaId:"AFA", ticket:"CMIN3", contaNegociada:41, contaAlugada:43, quantidade:21000, custoTotal:89281.73},
+  // Quantidade/Custo Total ainda não informados pro usuário — ficam 0 até
+  // ele completar (ou a 1ª Nota de Corretagem de compra processada já
+  // soma automaticamente em cima disso).
+  {empresaId:"AFA", ticket:"TIMS3", contaNegociada:65, contaAlugada:66, quantidade:0, custoTotal:0},
+  {empresaId:"AFA", ticket:"ALOS3", contaNegociada:68, contaAlugada:69, quantidade:0, custoTotal:0},
+  {empresaId:"AFA", ticket:"BBDC3", contaNegociada:75, contaAlugada:74, quantidade:0, custoTotal:0},
 ];
+// Merge aditivo, igual loadPadroes: nunca sobrescreve o que o usuário já
+// editou (quantidade/custo/conta), só adiciona tickets novos do seed que
+// ainda não existem por empresa+ticket.
 function loadCustoAcoes(){
   const raw = localStorage.getItem("holdings_custo_acoes");
-  if(raw) return JSON.parse(raw);
-  const seeded = CUSTO_SEED.map(c=>({...c}));
-  saveCustoAcoes(seeded);
-  return seeded;
+  let list = raw ? JSON.parse(raw) : [];
+  CUSTO_SEED.forEach(seed=>{
+    const existing = list.find(c=>c.empresaId===seed.empresaId && c.ticket===seed.ticket);
+    if(!existing) list.push({...seed});
+  });
+  saveCustoAcoes(list);
+  return list;
 }
 function saveCustoAcoes(list){ localStorage.setItem("holdings_custo_acoes", JSON.stringify(list)); }
 let custoDB = loadCustoAcoes();
