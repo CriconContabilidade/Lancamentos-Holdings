@@ -275,6 +275,16 @@ const PADROES_SEED = [
       {debito:22, credito:7, complemento:"PAGAMENTO REF. DISTRIBUIÇÃO DE LUCROS A SÓCIA ERICA BARREIROS"},
       {debito:262, credito:22, complemento:"VALOR REF. LUCROS A DISTRIBUIR A SÓCIA ERICA BARREIROS"},
     ]},
+  {codigo:10, descricao:"Distribuição de lucros - AFA (Pix enviado para Fernanda)", keywords:["PIX ENVIADO PARA FERNANDA FREITAS SIMON ALTHOFF"], empresas:["AFA"],
+    lancamentos:[
+      {debito:22, credito:7, hist:5},
+      {debito:262, credito:22, hist:4},
+    ]},
+  {codigo:11, descricao:"Distribuição de lucros - AFA (Pix enviado para André)", keywords:["PIX ENVIADO PARA ANDRE ANTONIO ALTHOFF"], empresas:["AFA"],
+    lancamentos:[
+      {debito:348, credito:7, hist:5},
+      {debito:262, credito:348, hist:2},
+    ]},
 ];
 
 // Faz merge aditivo do seed com o que já está salvo no navegador — nunca
@@ -1266,10 +1276,19 @@ async function processarContaRemunera(file){
       lancRows.push({data, debito:currentEmpresa.contaBanco, credito:13, valor:Math.abs(valor), codHist:1, complemento:null, origem:"Conta Remunera BTG — dividendos GT Clínica"});
       return;
     }
-    const socio = matchSocio(descricao, currentEmpresa);
-    if(socio && norm.startsWith("PIX ENVIADO PARA")){
-      lancRows.push({data, debito:socio.contaLucros, credito:currentEmpresa.contaBanco, valor:Math.abs(valor), codHist:null, complemento:descricao, origem:"Conta Remunera BTG — distribuição de lucros"});
-      return;
+    if(norm.startsWith("PIX ENVIADO PARA")){
+      // Padrão específico (por sócio/nome completo) tem prioridade sobre o
+      // lançamento genérico — mesma lógica do Extrato Unicred.
+      const p = matchPadrao(descricao, currentEmpresa.id);
+      if(p && p.lancamentos){
+        p.lancamentos.forEach(l=> lancRows.push({data, debito:l.debito, credito:l.credito, valor:Math.abs(valor), codHist:l.hist??null, complemento:l.complemento??null, origem:"Conta Remunera BTG — padrão: "+p.descricao}));
+        return;
+      }
+      const socio = matchSocio(descricao, currentEmpresa);
+      if(socio){
+        lancRows.push({data, debito:socio.contaLucros, credito:currentEmpresa.contaBanco, valor:Math.abs(valor), codHist:null, complemento:descricao, origem:"Conta Remunera BTG — distribuição de lucros"});
+        return;
+      }
     }
     ignoradas.push({origem:"Conta Remunera BTG", data, descricao, valor});
   });
