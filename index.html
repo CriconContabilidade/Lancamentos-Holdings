@@ -172,6 +172,7 @@ code{background:var(--paper);padding:1px 5px;border-radius:3px;font-family:'IBM 
       <div class="section-title" id="empresaTitle">Documentos do mês</div>
       <div class="help">Carregue os documentos do período. Depois clique em <b>Processar</b> para gerar as linhas das planilhas <b>Escrita Holding</b> e <b>Lançamentos Holding</b>.</div>
       <div class="doc-grid" id="empresaDocGrid"></div>
+      <div id="empresaSaldoAnteriorBox"></div>
       <div class="btn-row"><button class="btn" id="empresaProcessBtn" onclick="processarEmpresa()">Processar</button></div>
       <div id="empresaStatus" class="status-line hidden"></div>
     </div>
@@ -779,7 +780,14 @@ function goEmpresa(empId){
   currentEmpresa = EMPRESAS.find(e=>e.id===empId);
   resetEmpresaState();
   document.getElementById("empresaTitle").textContent = `${currentEmpresa.nome} — Documentos do mês`;
+  // Pré-preenche o saldo anterior da aplicação com o que foi calculado da
+  // última vez pra essa empresa — evita ter que ir atrás do valor de novo
+  // todo mês.
+  const salvo = loadSaldoAplicacaoAnterior()[currentEmpresa.id];
+  saldoAnteriorAplicacao = salvo ? String(salvo.saldo).replace(".",",") : "";
+  saldoAnteriorAplicacaoRef = salvo ? salvo.mesAno : "";
   renderDocGrid();
+  renderSaldoAnteriorBox();
   document.getElementById("boxEscrita").classList.add("hidden");
   document.getElementById("boxLanc").classList.add("hidden");
   document.getElementById("boxIgnorados").classList.add("hidden");
@@ -822,6 +830,20 @@ function renderDocGrid(){
     if(d.multiple){ arquivos[d.key] = Array.from(files); markDropDone(drop, arquivos[d.key].map(f=>f.name).join(", ")); }
     else { arquivos[d.key] = files[0]; markDropDone(drop, files[0].name); }
   }));
+}
+// Saldo anterior da aplicação Unicred (formato "EXTRATO DE APLICAÇÃO", que
+// não traz o rendimento do mês pronto — ver extrairSaldoBrutoAplicacaoLedger).
+// Globais porque o campo é recriado a cada render, igual escritaUltimaNota.
+let saldoAnteriorAplicacao = "";
+let saldoAnteriorAplicacaoRef = ""; // mês/ano a que esse saldo se refere, só informativo
+function renderSaldoAnteriorBox(){
+  const box = document.getElementById("empresaSaldoAnteriorBox");
+  if(currentEmpresa.temUnicred===false){ box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="field" style="max-width:360px;margin-top:10px;">
+    <label>Saldo anterior da aplicação (RDC/CDB Unicred)</label>
+    <input class="cell-input" style="width:100%" value="${saldoAnteriorAplicacao}" placeholder="ex. 495296,76" onchange="saldoAnteriorAplicacao=this.value">
+    <div class="small" style="color:var(--ink-soft);font-size:11px;margin-top:3px;">${saldoAnteriorAplicacaoRef ? `Referente a ${saldoAnteriorAplicacaoRef} (calculado automaticamente da última vez).` : "Só é usado se o Resgate de Aplicação carregado for do formato \"Extrato de Aplicação\" (sem rendimento do mês pronto) — nos outros formatos essa conta é automática e esse campo é ignorado."}</div>
+  </div>`;
 }
 function wireDropzone(dropId, inputId, onFiles){
   const drop = document.getElementById(dropId);
@@ -1045,6 +1067,38 @@ function extrairRendimentoPeriodoIRS(lines){
   });
   return Math.round(total*100)/100;
 }
+// Formato "EXTRATO DE APLICAÇÃO" (ledger): não traz "Rendimento do Período"
+// do MÊS, só o acumulado desde a aplicação de cada título (a Unicred não
+// emite esse extrato mensal) — por isso o rendimento do mês tem que ser
+// calculado pela diferença de saldo, com o usuário informando o saldo
+// bruto do mês anterior. Cada título tem seu bloco de totais (com rótulo
+// sozinho na linha, ex. "Valor Aplicado: 123,45" — sem confundir com a
+// linha "Data Aplicação: ... Valor Aplicado: ... Data Vencimento: ...",
+// que não bate ancorada). Saldo bruto = valor aplicado + rendimento do
+// período (acumulado) − valor resgatado, somado entre todos os títulos.
+function extrairSaldoBrutoAplicacaoLedger(lines){
+  let totalAplicado=0, totalResgatado=0, totalRendimento=0, dataValores=null;
+  lines.forEach(line=>{
+    let m;
+    if(m=line.match(/^Valor Aplicado:\s*([\d.,]+)$/)) totalAplicado += parseBRL(m[1])||0;
+    else if(m=line.match(/^Valor Resgatado:\s*([\d.,]+)$/)) totalResgatado += parseBRL(m[1])||0;
+    else if(m=line.match(/^Rendimento do Per[íi]odo:\s*(-?[\d.,]+)$/)) totalRendimento += parseBRL(m[1])||0;
+    else if(m=line.match(/^Valores em:\s*(\d{2}\/\d{2}\/\d{4})$/)) dataValores = brDateToParts(m[1]);
+  });
+  const saldoBruto = Math.round((totalAplicado + totalRendimento - totalResgatado)*100)/100;
+  return { saldoBruto, dataValores };
+}
+// Guarda o saldo bruto calculado de um mês pra sugerir automaticamente
+// como "saldo anterior" no processamento do mês seguinte — evita o
+// usuário ter que ir atrás do valor no extrato/planilha de novo.
+function loadSaldoAplicacaoAnterior(){
+  try{ return JSON.parse(localStorage.getItem("holdings_saldo_aplicacao")||"{}"); }catch(e){ return {}; }
+}
+function saveSaldoAplicacaoAtual(empresaId, mesAno, saldo){
+  const db = loadSaldoAplicacaoAnterior();
+  db[empresaId] = { mesAno, saldo };
+  localStorage.setItem("holdings_saldo_aplicacao", JSON.stringify(db));
+}
 
 async function processarResgateEExtratoUnicred(){
   const pagesExtrato = await extractPdfAllLines(arquivos.extratoUnicred);
@@ -1072,6 +1126,24 @@ async function processarResgateEExtratoUnicred(){
         const match = resgateLines.find(r => a.data && dateKey(r.data)===dateKey(a.data));
         return {...a, valorResgateBruto: match ? Math.abs(match.valor) : null};
       });
+      // Esse formato não traz "Rendimento do Período" do mês pronto — calcula
+      // pela diferença de saldo bruto (ver extrairSaldoBrutoAplicacaoLedger),
+      // usando o saldo anterior informado no campo da tela.
+      const { saldoBruto, dataValores } = extrairSaldoBrutoAplicacaoLedger(linesResgate);
+      const saldoAnterior = parseBRL(saldoAnteriorAplicacao);
+      if(saldoAnterior && dataValores){
+        rendimentoPeriodo = Math.round((saldoBruto - saldoAnterior)*100)/100;
+        periodoRendimento = { fim: dataValores };
+        const mesAnoNovo = String(dataValores.m).padStart(2,"0") + "/" + dataValores.y;
+        saveSaldoAplicacaoAtual(currentEmpresa.id, mesAnoNovo, saldoBruto);
+        saldoAnteriorAplicacao = String(saldoBruto).replace(".", ",");
+        saldoAnteriorAplicacaoRef = mesAnoNovo;
+        renderSaldoAnteriorBox();
+      } else if(dataValores){
+        let pm = dataValores.m - 1, py = dataValores.y;
+        if(pm===0){ pm = 12; py -= 1; }
+        ignoradas.push({origem:"Resgate Unicred — rendimento do período", data:dataValores, descricao:`Formato "Extrato de Aplicação" sem rendimento do mês pronto — preencha o campo "Saldo anterior da aplicação" (acima do botão Processar) com o saldo bruto de ${String(pm).padStart(2,"0")}/${py} e processe de novo pra gerar o lançamento do rendimento.`, valor:null});
+      }
     } else if(linesResgate.some(l=>/Lista de t[íi]tulos|Demonstrativo de Rentabilidade/i.test(l))){
       const titulos = await parseResgateFormatoTransposto(arquivos.resgateUnicred);
       // casa cada título com a linha de resgate do extrato (mesma lógica de
