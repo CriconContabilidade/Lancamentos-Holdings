@@ -283,11 +283,12 @@ const PADROES_SEED = [
       {debito:22, credito:34, hist:5},
       {debito:262, credito:22, hist:4},
     ]},
-  {codigo:11, descricao:"Distribuição de lucros - AFA (Pix enviado para André)", keywords:["PIX ENVIADO PARA ANDRE ANTONIO ALTHOFF"], empresas:["AFA"],
+  {codigo:11, descricao:"Distribuição de lucros - AFA (Pix enviado para André, valor a partir de R$1.999,00)", keywords:["PIX ENVIADO PARA ANDRE ANTONIO ALTHOFF"], empresas:["AFA"], valorMinimo:1999,
     lancamentos:[
       {debito:348, credito:34, hist:5},
       {debito:262, credito:348, hist:2},
     ]},
+  {codigo:12, descricao:"Ignorar — Pix enviado para André abaixo de R$1.999,00 é pró-labore, não distribuição de lucros", keywords:["PIX ENVIADO PARA ANDRE ANTONIO ALTHOFF"], empresas:["AFA"], valorMaximo:1998.99, ignorar:true},
 ];
 
 // Faz merge aditivo do seed com o que já está salvo no navegador — nunca
@@ -320,6 +321,12 @@ function loadPadroes(){
     // salvo no navegador antes da correção.
     if((seed.codigo===10 || seed.codigo===11) && Array.isArray(existing.lancamentos)){
       existing.lancamentos.forEach((l,i)=>{ if(l.credito===7 && seed.lancamentos[i] && seed.lancamentos[i].credito===34) l.credito = 34; });
+    }
+    // Pix pro André abaixo de R$1.999 é pró-labore, não distribuição de
+    // lucros (codigo:12 cobre esses valores, ignorando) — quem já tinha o
+    // padrão 11 salvo sem essa faixa pegava tudo como distribuição.
+    if(seed.codigo===11 && seed.valorMinimo!=null && existing.valorMinimo==null){
+      existing.valorMinimo = seed.valorMinimo;
     }
   });
   savePadroes(list);
@@ -713,10 +720,15 @@ function parseRemuneraBlocks(lines){
 /* =========================================================================
    CASAMENTO COM LANÇAMENTOS PADRÕES / SÓCIOS / DOC→NOME
    ========================================================================= */
-function matchPadrao(descricao, empresaId){
+function matchPadrao(descricao, empresaId, valor){
   const norm = normalizeText(descricao);
   for(const p of padroesDB){
     if(p.empresas && p.empresas.length && !p.empresas.includes(empresaId)) continue;
+    // valorMinimo/valorMaximo (opcionais) filtram por faixa de valor — ex.
+    // separar Pix de distribuição de lucros de Pix de pró-labore quando os
+    // dois têm a mesma descrição e só o valor os diferencia.
+    if(p.valorMinimo!=null && !(valor!=null && Math.abs(valor)>=p.valorMinimo)) continue;
+    if(p.valorMaximo!=null && !(valor!=null && Math.abs(valor)<=p.valorMaximo)) continue;
     for(const kw of p.keywords){
       if(norm.includes(normalizeText(kw))) return p;
     }
@@ -1110,7 +1122,7 @@ async function processarExtratoUnicred(file, jaExtraido){
     // lançamento genérico de sócio — um mesmo doc. pode gerar mais de uma
     // linha no extrato (ex.: transferência + PIX complementar com o nome
     // do sócio na descrição), e todas devem seguir o padrão cadastrado.
-    const p = matchPadrao(txn.descricao, currentEmpresa.id);
+    const p = matchPadrao(txn.descricao, currentEmpresa.id, txn.valor);
     if(p){
       if(p.ignorar) return;
       if(p.lancamentos){
@@ -1319,12 +1331,16 @@ async function processarContaRemunera(file){
       return;
     }
     if(norm.startsWith("PIX ENVIADO PARA")){
-      // Padrão específico (por sócio/nome completo) tem prioridade sobre o
-      // lançamento genérico — mesma lógica do Extrato Unicred.
-      const p = matchPadrao(descricao, currentEmpresa.id);
-      if(p && p.lancamentos){
-        p.lancamentos.forEach(l=> lancRows.push({data, debito:l.debito, credito:l.credito, valor:Math.abs(valor), codHist:l.hist??null, complemento:l.complemento??null, origem:"Conta Remunera BTG — padrão: "+p.descricao}));
-        return;
+      // Padrão específico (por sócio/nome completo, e às vezes por faixa de
+      // valor — ex. pró-labore x distribuição de lucros no mesmo nome) tem
+      // prioridade sobre o lançamento genérico — mesma lógica do Extrato Unicred.
+      const p = matchPadrao(descricao, currentEmpresa.id, valor);
+      if(p){
+        if(p.ignorar) return;
+        if(p.lancamentos){
+          p.lancamentos.forEach(l=> lancRows.push({data, debito:l.debito, credito:l.credito, valor:Math.abs(valor), codHist:l.hist??null, complemento:l.complemento??null, origem:"Conta Remunera BTG — padrão: "+p.descricao}));
+          return;
+        }
       }
       const socio = matchSocio(descricao, currentEmpresa);
       if(socio){
