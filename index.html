@@ -1243,6 +1243,15 @@ function gerarRendimentoAplicacaoPorTitulo(linesResgate){
         complemento: `VALOR REF. RENDIMENTO DE APLICAÇÃO FINANCEIRA ${mesAno} - RDC UNICRED TÍTULO ${b.titulo}`,
         origem: "Resgate Unicred — rendimento do período (título "+b.titulo+")",
       });
+      // Mesmo esquema da AFA: rendimento de aplicação também vira Nota
+      // Fiscal (Escrita Holding) — sem IR retido aqui (isso só ocorre no
+      // resgate de verdade, já tratado à parte), então a baixa de serviços
+      // desse título sai pelo valor cheio do rendimento.
+      escritaRows.push({
+        cnpj: CNPJ_UNICRED_CRICIUMA, data: b.dataValores, acumulador: 51,
+        valorServicos: rendimento, valorContabil: rendimento, baseCalculo: rendimento, valorIRRF: null,
+        origem: "Resgate Unicred — rendimento do período (título "+b.titulo+")",
+      });
     }
     registro.saldoAnterior = saldoBruto;
     registro.mesAnoSaldoAnterior = mesAno;
@@ -1343,6 +1352,15 @@ async function processarResgateEExtratoUnicred(){
     lancRows.push({
       data: periodoRendimento.fim, debito: currentEmpresa.contaAplicacao, credito: 395, valor: rendimentoPeriodo, codHist: null,
       complemento: `VALOR REF. RENDIMENTO DE APLICAÇÃO FINANCEIRA RDC UNICRED ${mesAno}`,
+      origem: "Resgate Unicred — rendimento do período",
+    });
+    // Mesmo esquema da AFA: rendimento de aplicação também vira Nota
+    // Fiscal (Escrita Holding) — sem IR retido aqui (isso só ocorre no
+    // resgate de verdade, já tratado à parte), então a baixa de serviços
+    // sai pelo valor cheio do rendimento.
+    escritaRows.push({
+      cnpj: CNPJ_UNICRED_CRICIUMA, data: periodoRendimento.fim, acumulador: 51,
+      valorServicos: rendimentoPeriodo, valorContabil: rendimentoPeriodo, baseCalculo: rendimentoPeriodo, valorIRRF: null,
       origem: "Resgate Unicred — rendimento do período",
     });
   }
