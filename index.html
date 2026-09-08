@@ -1199,8 +1199,12 @@ async function processarContaInvestimento(file){
     if(!m) return;
     const [,dataStr,taxaStr,qtdeStr,,valorContratadoStr] = m;
     revisaoAluguel.push({
+      // Sem valor padrão pro ticket: o PDF pode trazer mais de um papel
+      // alugado no mesmo mês (cada um com custo médio e conta diferentes),
+      // e um default "adivinhado" arrisca passar batido sem o usuário
+      // conferir contra o PDF — melhor forçar o preenchimento manual.
       data: brDateToParts(dataStr), taxa: parseBRL(taxaStr), quantidade: parseInt(qtdeStr.replace(/\./g,""),10),
-      valorContratado: parseBRL(valorContratadoStr), tipo: "", ticket: "CMIN3",
+      valorContratado: parseBRL(valorContratadoStr), tipo: "", ticket: "",
       pagina: linesPos[idx].pagina, y: linesPos[idx].y,
     });
   });
@@ -1350,15 +1354,17 @@ function renderRevisaoAluguel(){
   let el = document.getElementById("revisaoAluguelBox");
   if(!el){ el = document.createElement("div"); el.id="revisaoAluguelBox"; el.className="card"; document.getElementById("screen-empresa").insertBefore(el, document.getElementById("boxIgnorados")); }
   let html = `<div class="section-title">🔎 Aluguel de ações (BTG) — confirme Empréstimo/Liquidação e o ticket antes de gerar</div>
-  <div class="help">Este PDF não traz o rótulo do tipo de operação nem o ticker de forma legível pelo sistema — confirme cada linha (o valor lançado usa o custo médio do ticket, não o "Preço de Referência" do relatório).</div>
+  <div class="help">Este PDF não traz o rótulo do tipo de operação nem o ticker de forma legível pelo sistema — confira cada linha contra o extrato (seção "Renda variável — Movimentação — Ações | Aluguel") antes de gerar, <b>inclusive quando houver mais de um ticket alugado no mesmo mês</b> (o valor lançado usa o custo médio de cada ticket, não o "Preço de Referência" do relatório).</div>
   <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Qtde.</th><th>Taxa%</th><th>Valor Contratado (ref.)</th><th>Ticket</th><th>Tipo</th><th></th></tr></thead><tbody>`;
+  const tickersEmpresa = custoDB.filter(c=>c.empresaId===currentEmpresa.id).map(c=>c.ticket).filter(Boolean);
+  html += `<datalist id="dlTickersAluguel">${tickersEmpresa.map(t=>`<option value="${t}">`).join('')}</datalist>`;
   revisaoAluguel.forEach((r,i)=>{
-    html += `<tr class="${r.tipo?'':'flag'}">
+    html += `<tr class="${r.tipo && r.ticket ? '' : 'flag'}">
       <td>${fmtDateBR(r.data)}</td>
       <td class="num">${r.quantidade}</td>
       <td class="num">${fmtBRL(r.taxa)}</td>
       <td class="num">${fmtBRL(r.valorContratado)}</td>
-      <td class="cell"><input class="cell-input" value="${r.ticket}" onchange="revisaoAluguel[${i}].ticket=this.value.toUpperCase()"></td>
+      <td class="cell"><input class="cell-input" list="dlTickersAluguel" placeholder="ex. CMIN3" value="${r.ticket}" onchange="revisaoAluguel[${i}].ticket=this.value.toUpperCase();renderRevisaoAluguel()"></td>
       <td class="cell"><select class="mini" onchange="revisaoAluguel[${i}].tipo=this.value">
         <option value="">— escolher —</option>
         <option value="EMPRESTIMO" ${r.tipo==='EMPRESTIMO'?'selected':''}>Empréstimo</option>
@@ -1378,8 +1384,8 @@ function renderRevisaoAluguel(){
 // Gera lançamento só das linhas já classificadas — o resto continua na
 // tabela pra completar depois, sem travar quem já está pronto.
 function aplicarRevisaoAluguel(){
-  const prontos = revisaoAluguel.filter(r=>r.tipo);
-  if(!prontos.length){ alert("Classifique Empréstimo/Liquidação em pelo menos uma linha antes de gerar."); return; }
+  const prontos = revisaoAluguel.filter(r=>r.tipo && r.ticket);
+  if(!prontos.length){ alert("Classifique Empréstimo/Liquidação e preencha o Ticket em pelo menos uma linha antes de gerar."); return; }
   prontos.forEach(r=>{
     const custo = getOrCreateCusto(currentEmpresa.id, r.ticket);
     const unit = custoMedioUnitario(custo);
@@ -1394,7 +1400,7 @@ function aplicarRevisaoAluguel(){
         origem:"Conta Investimento BTG — devolução de ações"});
     }
   });
-  revisaoAluguel = revisaoAluguel.filter(r=>!r.tipo);
+  revisaoAluguel = revisaoAluguel.filter(r=>!(r.tipo && r.ticket));
   renderRevisaoAluguel();
   renderLancTable();
 }
