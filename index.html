@@ -1044,6 +1044,13 @@ async function processarResgateEExtratoUnicred(){
     periodoRendimento = extrairPeriodo(linesResgate) || periodo;
     if(linesResgate.some(l=>/EXTRATO DE APLICA[ÇC][ÃA]O/i.test(l))){
       automaticos = await parseResgateFormatoLedger(arquivos.resgateUnicred, periodo);
+      // Este formato reverso-calcula o rendimentoPago a partir do IR — não é
+      // o valor real do resgate no banco, então casa com a linha do extrato
+      // pela data pra saber o valor bruto de verdade (pra baixa de serviços).
+      automaticos = automaticos.map(a=>{
+        const match = resgateLines.find(r => a.data && dateKey(r.data)===dateKey(a.data));
+        return {...a, valorResgateBruto: match ? Math.abs(match.valor) : null};
+      });
     } else if(linesResgate.some(l=>/Lista de t[íi]tulos|Demonstrativo de Rentabilidade/i.test(l))){
       const titulos = await parseResgateFormatoTransposto(arquivos.resgateUnicred);
       // casa cada título com a linha de resgate do extrato (mesma lógica de
@@ -1052,7 +1059,7 @@ async function processarResgateEExtratoUnicred(){
       automaticos = titulos.map(t=>{
         const match = resgateLines.find(r => normalizeText(r.descricao).includes(t.titulo.slice(0,-1)))
                     || resgateLines.find(r => Math.abs(r.valor - t.rendimentoPago) < 0.01 || Math.abs(Math.abs(r.valor) - t.rendimentoPago) < 0.01);
-        return { data: match ? match.data : null, rendimentoPago: t.rendimentoPago, irRetido: t.irRetido, titulo: t.titulo };
+        return { data: match ? match.data : null, rendimentoPago: t.rendimentoPago, irRetido: t.irRetido, titulo: t.titulo, valorResgateBruto: match ? Math.abs(match.valor) : null };
       });
       rendimentoPeriodo = extrairRendimentoPeriodoTransposto(linesResgate);
     } else if(linesResgate.some(l=>/Informativo de Rentabilidade e Saldo/i.test(l))){
@@ -1073,6 +1080,7 @@ async function processarResgateEExtratoUnicred(){
       escritaRows.push({
         cnpj: CNPJ_UNICRED_CRICIUMA, data: a.data, acumulador: 51,
         valorServicos: a.rendimentoPago, valorContabil: a.rendimentoPago, baseCalculo: a.rendimentoPago, valorIRRF: a.irRetido,
+        valorRecebido: a.valorResgateBruto!=null ? Math.round((a.valorResgateBruto-(a.irRetido||0))*100)/100 : null,
         origem: "Resgate Unicred" + (a.titulo?` (título ${a.titulo})`:""),
       });
       if(!a.data) ignoradas.push({origem:"Resgate Unicred", data:null, descricao:`Não achei a data no extrato pro título ${a.titulo} — confira antes de exportar.`, valor:a.rendimentoPago});
@@ -1198,9 +1206,11 @@ async function processarContaInvestimento(file){
     const ir = parseBRL(irStr);
     if(!ir || ir<=0) return;
     const servico = Math.round((ir/0.225)*100)/100;
+    const valorLiquido = parseBRL(m[m.length-1]); // última coluna da linha = Saldo/Valor Líquido do resgate no banco
     escritaRows.push({
       cnpj: CNPJ_BANCO_BTG, data: brDateToParts(dataStr), acumulador: 51,
       valorServicos: servico, valorContabil: servico, baseCalculo: servico, valorIRRF: ir,
+      valorRecebido: valorLiquido, // pra baixa de serviços — ver função valorRecebidoEscrita
       origem: "Conta Investimento BTG — CDB (resgate)",
     });
   });
@@ -1364,6 +1374,7 @@ function aplicarRevisaoResgate(){
     escritaRows.push({
       cnpj: CNPJ_UNICRED_CRICIUMA, data: r.data, acumulador: 51,
       valorServicos: rendimento, valorContabil: rendimento, baseCalculo: rendimento, valorIRRF: ir,
+      valorRecebido: r.valorResgateBruto!=null ? Math.round((r.valorResgateBruto-ir)*100)/100 : null,
       origem: "Resgate Unicred",
     });
   });
@@ -1669,15 +1680,19 @@ function downloadEscritaTxt(){
 /* =========================================================================
    BAIXA DE SERVIÇOS — dá baixa nas mesmas notas da Escrita Holding
    ========================================================================= */
-// "Valor Recebido" pra baixa é o valor da PRÓPRIA nota fiscal líquido do
-// IRRF retido nela mesma (valor da NF − IRRF da NF) — não tem relação com
-// o valor que efetivamente circulou no banco (ex. o resgate bruto de uma
-// aplicação CDB/RDC, que é bem maior e não é o que a parcela em aberto no
-// Domínio representa). Por isso não sobra diferença nenhuma pra Juros —
-// fica sempre 0 por padrão, só existe como campo editável pra ajuste
-// manual pontual.
-function valorRecebidoEscrita(r){ return r.valorRecebido ?? Math.round(((r.valorServicos||0) - (r.valorIRRF||0))*100)/100; }
-function jurosEscrita(r){ return r.jurosBaixa || 0; }
+// "Valor Recebido" pra baixa é o valor líquido que realmente circulou no
+// banco (resgate bruto − IRRF do resgate, ex. R$2.007,29 − R$7,29 =
+// R$2.000,00) — não o valor da nota fiscal. A nota fiscal, nos resgates de
+// CDB/RDC, é só a base de cálculo do IR (bem menor, ex. R$32,40), então ela
+// própria também tem seu IRRF (R$7,29) e fica com um líquido de R$25,11.
+// A diferença entre o que entrou de verdade no banco e esse líquido da NF
+// (R$2.000,00 − R$25,11 = R$1.974,89) é o que fecha a baixa e vai pra
+// Juros — senão a parcela nunca bate contra o extrato. Quando não há
+// valor de extrato disponível (não é resgate de CDB/RDC, ou não achou
+// correspondência), cai no líquido da própria NF e o juros fica 0.
+function liquidoDaNota(r){ return Math.round(((r.valorServicos||0) - (r.valorIRRF||0))*100)/100; }
+function valorRecebidoEscrita(r){ return r.valorRecebido ?? liquidoDaNota(r); }
+function jurosEscrita(r){ return Math.round((valorRecebidoEscrita(r) - liquidoDaNota(r))*100)/100; }
 function baixaServicosRowArray(r){
   const dataFmt = r.data ? fmtDateBR(r.data) : "";
   return [
