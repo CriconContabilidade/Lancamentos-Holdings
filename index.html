@@ -1095,22 +1095,45 @@ async function parseResgateFormatoTransposto(file){
   return out;
 }
 
+// Tabela regressiva do IRRF em renda fixa, por dias corridos entre a
+// aplicação e o resgate — usada pra "desfazer" o IR retido e achar o
+// rendimento tributado de verdade (rendimento = IR ÷ alíquota). Antes
+// disso a conta usava sempre 22,5% (só vale até 180 dias), inflando o
+// rendimento calculado pra resgates de títulos mais antigos.
+function aliquotaIRRFPorDias(dias){
+  if(dias<=180) return 0.225;
+  if(dias<=360) return 0.20;
+  if(dias<=720) return 0.175;
+  return 0.15;
+}
+function diasCorridosEntre(d1, d2){
+  return Math.round((Date.UTC(d2.y,d2.m-1,d2.d) - Date.UTC(d1.y,d1.m-1,d1.d)) / 86400000);
+}
 // --- Resgate: formato "Extrato de Aplicação" (uma página por título, com
 // razão normal Data/Histórico/Débito/Crédito/Saldo) — cada resgate tributado
-// já vem com sua própria linha "DÉBITO IRRF" na mesma data.
+// já vem com sua própria linha "DÉBITO IRRF" na mesma data. Acompanha em
+// qual título (e desde quando aplicado) a linha de IRRF está, pra escolher
+// a alíquota certa da tabela regressiva pelos dias corridos.
 const RESGATE_LEDGER_IRRF_RE = /^(\d{2}\/\d{2}\/\d{4})\s+D[ÉE]BITO IRRF\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+(-?[\d.]+,\d{2})$/i;
 async function parseResgateFormatoLedger(file, periodo){
   const pages = await extractPdfAllLines(file);
   const lines = pages.flat();
   const out = [];
+  let tituloAtual = null, dataAplicacaoAtual = null;
   lines.forEach(line=>{
+    const mTit = line.match(/T[íi]tulo:\s*(\d+)$/);
+    if(mTit){ tituloAtual = mTit[1]; dataAplicacaoAtual = null; return; }
+    const mData = line.match(/^Data Aplica[çc][ãa]o:\s*(\d{2}\/\d{2}\/\d{4})\s+Valor Aplicado:/);
+    if(mData){ dataAplicacaoAtual = brDateToParts(mData[1]); return; }
     const m = line.match(RESGATE_LEDGER_IRRF_RE);
     if(!m) return;
     const data = brDateToParts(m[1]);
     const ir = parseBRL(m[2]);
     if(!ir || ir<=0) return;
     if(periodo && (dateCompare(data,periodo.inicio)<0 || dateCompare(data,periodo.fim)>0)) return;
-    out.push({ data, rendimentoPago: Math.round((ir/0.225)*100)/100, irRetido: ir });
+    const dias = dataAplicacaoAtual ? diasCorridosEntre(dataAplicacaoAtual, data) : null;
+    const aliquota = dias!=null ? aliquotaIRRFPorDias(dias) : 0.225; // não deveria acontecer — sem título identificado, cai no pior caso
+    out.push({ data, rendimentoPago: Math.round((ir/aliquota)*100)/100, irRetido: ir, titulo: tituloAtual });
   });
   return out;
 }
@@ -1249,15 +1272,10 @@ function gerarRendimentoAplicacaoPorTitulo(linesResgate){
         complemento: `VALOR REF. RENDIMENTO DE APLICAÇÃO FINANCEIRA ${mesAno} - RDC UNICRED TÍTULO ${b.titulo}`,
         origem: "Resgate Unicred — rendimento do período (título "+b.titulo+")",
       });
-      // Mesmo esquema da AFA: rendimento de aplicação também vira Nota
-      // Fiscal (Escrita Holding) — sem IR retido aqui (isso só ocorre no
-      // resgate de verdade, já tratado à parte), então a baixa de serviços
-      // desse título sai pelo valor cheio do rendimento.
-      escritaRows.push({
-        cnpj: CNPJ_UNICRED_CRICIUMA, data: b.dataValores, acumulador: 51,
-        valorServicos: rendimento, valorContabil: rendimento, baseCalculo: rendimento, valorIRRF: null,
-        origem: "Resgate Unicred — rendimento do período (título "+b.titulo+")",
-      });
+      // Não gera Nota Fiscal aqui — só o rendimento de um RESGATE de
+      // verdade é tributado/faturado (ver parseResgateFormatoLedger); o
+      // rendimento do período é só reconhecimento contábil do acúmulo,
+      // sem fato gerador de IR nem NF.
     }
     registro.saldoAnterior = saldoBruto;
     registro.mesAnoSaldoAnterior = mesAno;
@@ -1360,15 +1378,11 @@ async function processarResgateEExtratoUnicred(){
       complemento: `VALOR REF. RENDIMENTO DE APLICAÇÃO FINANCEIRA RDC UNICRED ${mesAno}`,
       origem: "Resgate Unicred — rendimento do período",
     });
-    // Mesmo esquema da AFA: rendimento de aplicação também vira Nota
-    // Fiscal (Escrita Holding) — sem IR retido aqui (isso só ocorre no
-    // resgate de verdade, já tratado à parte), então a baixa de serviços
-    // sai pelo valor cheio do rendimento.
-    escritaRows.push({
-      cnpj: CNPJ_UNICRED_CRICIUMA, data: periodoRendimento.fim, acumulador: 51,
-      valorServicos: rendimentoPeriodo, valorContabil: rendimentoPeriodo, baseCalculo: rendimentoPeriodo, valorIRRF: null,
-      origem: "Resgate Unicred — rendimento do período",
-    });
+    // Não gera Nota Fiscal aqui — só o rendimento de um RESGATE de verdade
+    // é tributado/faturado (ver parseResgateFormatoLedger, formato
+    // transposto e IRS já têm seu próprio tratamento de resgate à parte);
+    // o rendimento do período é só reconhecimento contábil do acúmulo, sem
+    // fato gerador de IR nem NF.
   }
 
   if(automaticos.length){
