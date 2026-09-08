@@ -826,7 +826,7 @@ let revisaoResgate = []; // resgates Unicred pendentes de Rendimento Pago / IR R
 async function processarEmpresa(){
   const status = document.getElementById("empresaStatus");
   status.classList.remove("hidden","err"); status.textContent = "Processando...";
-  escritaRows = []; lancRows = []; ignoradas = []; revisaoAluguel = []; revisaoContaCorrente = []; revisaoResgate = [];
+  escritaRows = []; lancRows = []; ignoradas = []; revisaoAluguel = []; revisaoContaCorrente = []; revisaoResgate = []; escritaUltimaNota = "";
   try{
     if(arquivos.extratoUnicred){
       await processarResgateEExtratoUnicred();
@@ -1595,6 +1595,7 @@ function escritaRowArray(r){
   row[11]=r.valorServicos; row[14]=r.valorContabil; row[15]=r.baseCalculo; row[19]=r.valorIRRF;
   return row;
 }
+let escritaUltimaNota = ""; // sobrevive a re-renders da tabela (o input é recriado a cada render)
 function renderEscritaTable(){
   const box = document.getElementById("boxEscrita");
   document.getElementById("boxEscrita").classList.toggle("hidden", escritaRows.length===0);
@@ -1603,6 +1604,12 @@ function renderEscritaTable(){
   let html = `<div class="summary-row">
     <div class="item"><div class="k">Linhas</div><div class="v">${escritaRows.length}</div></div>
     <div class="item"><div class="k">Total Valor Serviços</div><div class="v">R$ ${fmtBRL(totalServicos)}</div></div>
+  </div>
+  <div class="table-toolbar">
+    <label style="font-size:12px;color:var(--ink-soft);">Nº da última nota emitida:
+      <input type="number" class="cell-input" style="width:100px" value="${escritaUltimaNota}" placeholder="ex. 1234" onchange="escritaUltimaNota=this.value">
+    </label>
+    <button class="btn ghost small" onclick="numerarEscritaSequencial()">Numerar sequencialmente</button>
   </div>
   <div class="table-wrap"><table class="preview"><thead><tr>
     <th>Origem</th><th>CNPJ</th><th>Nº Documento</th><th>Data</th><th>Acumulador</th><th>Valor Serviços</th><th>Base Cálculo</th><th>Valor IRRF</th><th></th>
@@ -1629,6 +1636,18 @@ function renderEscritaTable(){
   document.getElementById("boxEscrita").querySelector(".section-title") || (box.parentElement.querySelector(".section-title"));
 }
 function updateEscritaValor(i, field, val){ const n=parseBRL(val); escritaRows[i][field]= (val.trim()==="") ? null : n; renderEscritaTable(); }
+// Numera as notas em sequência a partir da última já emitida, na ordem
+// cronológica (data mais antiga primeiro) — é assim que as notas saem no
+// mundo real, independente da ordem em que os PDFs foram processados.
+// Reordena as próprias linhas nessa ordem também, pra tabela e numeração
+// baterem visualmente.
+function numerarEscritaSequencial(){
+  const ultima = parseInt(escritaUltimaNota, 10);
+  if(!ultima || ultima<0){ alert("Informe o número da última nota emitida antes de numerar."); return; }
+  escritaRows.sort((a,b)=> dateKey(a.data).localeCompare(dateKey(b.data)));
+  escritaRows.forEach((r,i)=>{ r.numeroDocumento = String(ultima + i + 1); });
+  renderEscritaTable();
+}
 function downloadEscritaXlsx(){ downloadXlsx("escrita_holding.xlsx", [ESCRITA_HEADER, ...escritaRows.map(escritaRowArray)], "Escrita"); }
 function downloadEscritaTxt(){
   const moneyIdx = [11,14,15,19];
