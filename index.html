@@ -1390,9 +1390,8 @@ function renderRevisaoAluguel(){
   <div class="btn-row">
     <button class="btn" onclick="aplicarRevisaoAluguel()">Gerar lançamentos do aluguel</button>
     <button class="btn ghost" onclick="tentarOcrAluguel()">🔍 Tentar OCR nas linhas sem ticket/tipo</button>
-    <button class="btn ghost" onclick="downloadLancXlsx()">Baixar planilha Lançamentos Holding (.xlsx)</button>
-    <button class="btn ghost" onclick="downloadLancTxt()">Baixar TXT de Lançamentos</button>
   </div>
+  <div class="help" style="margin:8px 0 0;">Os lançamentos gerados aqui entram direto na tabela <b>Lançamentos Holding</b> logo acima — baixe a planilha/TXT por lá, num único lugar pra toda a empresa.</div>
   <div id="aluguelOcrStatus" class="status-line hidden"></div>`;
   el.innerHTML = html;
 }
@@ -1500,9 +1499,8 @@ function renderRevisaoContaCorrente(){
     <button class="btn ghost" onclick="tentarOcrContaCorrente()">🔍 Tentar OCR nas linhas sem categoria</button>
     <button class="btn ghost" onclick="downloadEscritaXlsx()">Baixar planilha Escrita Holding (.xlsx)</button>
     <button class="btn ghost" onclick="downloadEscritaTxt()">Baixar TXT de Serviços</button>
-    <button class="btn ghost" onclick="downloadLancXlsx()">Baixar planilha Lançamentos Holding (.xlsx)</button>
-    <button class="btn ghost" onclick="downloadLancTxt()">Baixar TXT de Lançamentos</button>
   </div>
+  <div class="help" style="margin:8px 0 0;">Os lançamentos gerados aqui entram direto na tabela <b>Lançamentos Holding</b> — baixe a planilha/TXT por lá, num único lugar pra toda a empresa.</div>
   <div id="ccOcrStatus" class="status-line hidden"></div>`;
   el.innerHTML = html;
 }
