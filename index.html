@@ -280,12 +280,12 @@ const PADROES_SEED = [
     ]},
   {codigo:10, descricao:"Distribuição de lucros - AFA (Pix enviado para Fernanda)", keywords:["PIX ENVIADO PARA FERNANDA FREITAS SIMON ALTHOFF"], empresas:["AFA"],
     lancamentos:[
-      {debito:22, credito:7, hist:5},
+      {debito:22, credito:34, hist:5},
       {debito:262, credito:22, hist:4},
     ]},
   {codigo:11, descricao:"Distribuição de lucros - AFA (Pix enviado para André)", keywords:["PIX ENVIADO PARA ANDRE ANTONIO ALTHOFF"], empresas:["AFA"],
     lancamentos:[
-      {debito:348, credito:7, hist:5},
+      {debito:348, credito:34, hist:5},
       {debito:262, credito:348, hist:2},
     ]},
 ];
@@ -311,6 +311,15 @@ function loadPadroes(){
     // editar "lancamentos" ainda, então isso nunca é uma edição do usuário.
     if(seed.lancamentos && !existing.lancamentos){
       existing.lancamentos = seed.lancamentos.map(l=>({...l}));
+    }
+    // Correção de bug: os padrões 10/11 (Pix enviado para Fernanda/André,
+    // AFA) nasceram creditando a conta 7 (Unicred, que a AFA nem tem mais)
+    // em vez da 34 (Conta Digital BTG, de onde esse Pix realmente sai) —
+    // não existe UI pra editar "lancamentos" ainda, então isso nunca é uma
+    // edição do usuário, é sempre o bug antigo. Corrige quem já tinha
+    // salvo no navegador antes da correção.
+    if((seed.codigo===10 || seed.codigo===11) && Array.isArray(existing.lancamentos)){
+      existing.lancamentos.forEach((l,i)=>{ if(l.credito===7 && seed.lancamentos[i] && seed.lancamentos[i].credito===34) l.credito = 34; });
     }
   });
   savePadroes(list);
@@ -1301,8 +1310,12 @@ async function processarContaRemunera(file){
       return;
     }
     if(/^APLICACAO CONTA REMUNERADA$|^D[EÉ]BITO NA CONTA CORRENTE$|^CR[EÉ]DITO NA CONTA CORRENTE$|^RESGATE CONTA REMUNERADA$/.test(norm)) return; // movimentação interna, ignorar
+    // Este extrato é da Conta Digital BTG (conta corrente PJ separada da
+    // Conta Investimento) — usa contaDigital, não contaBanco. Fallback pra
+    // contaBanco só pra empresa que não tenha contaDigital cadastrada.
+    const contaDigital = currentEmpresa.contaDigital ?? currentEmpresa.contaBanco;
     if(norm.startsWith("PIX RECEBIDO DE GT CLINICA") || norm.startsWith("PIX RECEBIDO DE GT CL")){
-      lancRows.push({data, debito:currentEmpresa.contaBanco, credito:13, valor:Math.abs(valor), codHist:1, complemento:null, origem:"Conta Remunera BTG — dividendos GT Clínica"});
+      lancRows.push({data, debito:contaDigital, credito:13, valor:Math.abs(valor), codHist:1, complemento:null, origem:"Conta Remunera BTG — dividendos GT Clínica"});
       return;
     }
     if(norm.startsWith("PIX ENVIADO PARA")){
@@ -1315,7 +1328,7 @@ async function processarContaRemunera(file){
       }
       const socio = matchSocio(descricao, currentEmpresa);
       if(socio){
-        lancRows.push({data, debito:socio.contaLucros, credito:currentEmpresa.contaBanco, valor:Math.abs(valor), codHist:null, complemento:descricao, origem:"Conta Remunera BTG — distribuição de lucros"});
+        lancRows.push({data, debito:socio.contaLucros, credito:contaDigital, valor:Math.abs(valor), codHist:null, complemento:descricao, origem:"Conta Remunera BTG — distribuição de lucros"});
         return;
       }
     }
