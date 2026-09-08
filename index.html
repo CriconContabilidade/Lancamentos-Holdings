@@ -269,7 +269,7 @@ const PADROES_SEED = [
   {codigo:5, descricao:"Dividendos recebidos - GT Clínica (transferência doc. 1662058)", keywords:["1662058"], debito:7, credito:13, hist:1},
   {codigo:6, descricao:"Distribuição de lucros - GBG (transferência doc. 1067737, valor a partir de R$400,00)", keywords:["1067737"], empresas:["GBG"], valorMinimo:400, distribuicaoLucros:true,
     lancamentos:[
-      {debito:22, credito:7},
+      {debito:22, credito:7, hist:5},
       {debito:262, credito:22, complemento:"VALOR REF. LUCROS A DISTRIBUIR AO SÓCIO GIOVANNY BONELLI GUIDI"},
     ]},
   {codigo:13, descricao:"Pagamento de combustível - GBG (transferência doc. 1067737, valor abaixo de R$400,00)", keywords:["1067737"], empresas:["GBG"], valorMaximo:399.99,
@@ -344,6 +344,12 @@ function loadPadroes(){
     // existir não tinha o campo.
     if(seed.distribuicaoLucros && !existing.distribuicaoLucros){
       existing.distribuicaoLucros = true;
+    }
+    // Distribuição de lucros da GBG (codigo:6) nasceu sem código de
+    // histórico na 1ª perna (pagamento) — corrige quem já tinha salvo sem
+    // isso, igual as outras migrações de "lancamentos" acima.
+    if(seed.codigo===6 && Array.isArray(existing.lancamentos) && existing.lancamentos[0] && existing.lancamentos[0].hist==null && seed.lancamentos[0] && seed.lancamentos[0].hist!=null){
+      existing.lancamentos[0].hist = seed.lancamentos[0].hist;
     }
   });
   savePadroes(list);
