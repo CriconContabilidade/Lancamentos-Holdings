@@ -1366,8 +1366,8 @@ function renderRevisaoAluguel(){
   let el = document.getElementById("revisaoAluguelBox");
   if(!el){ el = document.createElement("div"); el.id="revisaoAluguelBox"; el.className="card"; document.getElementById("screen-empresa").insertBefore(el, document.getElementById("boxIgnorados")); }
   let html = `<div class="section-title">🔎 Aluguel de ações (BTG) — confirme Empréstimo/Liquidação e o ticket antes de gerar</div>
-  <div class="help">Este PDF não traz o rótulo do tipo de operação nem o ticker de forma legível pelo sistema — confira cada linha contra o extrato (seção "Renda variável — Movimentação — Ações | Aluguel") antes de gerar, <b>inclusive quando houver mais de um ticket alugado no mesmo mês</b> (o valor lançado usa o custo médio de cada ticket, não o "Preço de Referência" do relatório).</div>
-  <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Qtde.</th><th>Taxa%</th><th>Valor Contratado (ref.)</th><th>Ticket</th><th>Tipo</th><th></th></tr></thead><tbody>`;
+  <div class="help">Este PDF não traz o rótulo do tipo de operação nem o ticker de forma legível pelo sistema (só imagem, não dá nem pra copiar o texto). Use <b>🔍 Tentar OCR</b> pra tentar reconhecer essas duas colunas automaticamente, mas <b>confira sempre contra o extrato</b> (seção "Renda variável — Movimentação — Ações | Aluguel") antes de gerar — OCR erra, principalmente com fonte pequena — <b>inclusive quando houver mais de um ticket alugado no mesmo mês</b> (o valor lançado usa o custo médio de cada ticket, não o "Preço de Referência" do relatório).</div>
+  <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Qtde.</th><th>Taxa%</th><th>Valor Contratado (ref.)</th><th>Ticket</th><th>Tipo</th><th>Texto lido (OCR)</th><th></th></tr></thead><tbody>`;
   const tickersEmpresa = custoDB.filter(c=>c.empresaId===currentEmpresa.id).map(c=>c.ticket).filter(Boolean);
   html += `<datalist id="dlTickersAluguel">${tickersEmpresa.map(t=>`<option value="${t}">`).join('')}</datalist>`;
   revisaoAluguel.forEach((r,i)=>{
@@ -1382,16 +1382,64 @@ function renderRevisaoAluguel(){
         <option value="EMPRESTIMO" ${r.tipo==='EMPRESTIMO'?'selected':''}>Empréstimo</option>
         <option value="LIQUIDACAO" ${r.tipo==='LIQUIDACAO'?'selected':''}>Liquidação</option>
       </select></td>
+      <td style="font-size:11px;color:var(--ink-soft);max-width:220px;">${r._ocrTexto||''}</td>
       <td><button class="btn small ghost" onclick="revisaoAluguel.splice(${i},1);renderRevisaoAluguel();">✕</button></td>
     </tr>`;
   });
   html += `</tbody></table></div>
   <div class="btn-row">
     <button class="btn" onclick="aplicarRevisaoAluguel()">Gerar lançamentos do aluguel</button>
+    <button class="btn ghost" onclick="tentarOcrAluguel()">🔍 Tentar OCR nas linhas sem ticket/tipo</button>
     <button class="btn ghost" onclick="downloadLancXlsx()">Baixar planilha Lançamentos Holding (.xlsx)</button>
     <button class="btn ghost" onclick="downloadLancTxt()">Baixar TXT de Lançamentos</button>
-  </div>`;
+  </div>
+  <div id="aluguelOcrStatus" class="status-line hidden"></div>`;
   el.innerHTML = html;
+}
+// De-para tosco pro OCR do aluguel: tenta achar primeiro um ticket já
+// cadastrado pra essa holding (mais confiável que um regex genérico, que
+// pode confundir letra/número parecidos), com fallback pro padrão de
+// código B3 (4 letras + 1-2 dígitos). "LIQUIDACAO EMPRESTIMO" contém as
+// duas palavras juntas — por isso checa LIQUIDACAO primeiro.
+function parseOcrAluguel(texto, tickersConhecidos){
+  const n = normalizeText(texto);
+  let ticket = null;
+  for(const t of tickersConhecidos){ if(n.includes(normalizeText(t))){ ticket = t; break; } }
+  if(!ticket){ const m = n.match(/\b[A-Z]{4}\d{1,2}\b/); if(m) ticket = m[0]; }
+  let tipo = "";
+  if(/LIQUIDA/.test(n)) tipo = "LIQUIDACAO";
+  else if(/EMPRESTIMO/.test(n)) tipo = "EMPRESTIMO";
+  return {ticket, tipo};
+}
+async function tentarOcrAluguel(){
+  const status = document.getElementById("aluguelOcrStatus");
+  const pendentes = revisaoAluguel.filter(r=>(!r.tipo || !r.ticket) && r.pagina!=null);
+  if(!pendentes.length){ alert("Não há linhas pendentes com posição conhecida pra tentar OCR."); return; }
+  if(!arquivos.contaInvestimento){ alert("Recarregue o PDF da Conta Investimento BTG antes de tentar OCR (a ferramenta precisa reabrir o arquivo)."); return; }
+  status.classList.remove("hidden","err");
+  try{
+    const buf = await arquivos.contaInvestimento.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data:buf}).promise;
+    const ordenadas = [...pendentes].sort((a,b)=> a.pagina-b.pagina); // agrupa por página pra reaproveitar o render
+    const cacheRenders = {};
+    const tickersConhecidos = custoDB.filter(c=>c.empresaId===currentEmpresa.id).map(c=>c.ticket).filter(Boolean);
+    for(let i=0;i<ordenadas.length;i++){
+      status.textContent = `Rodando OCR... ${i+1}/${ordenadas.length}`;
+      const r = ordenadas[i];
+      try{
+        const texto = await ocrLinha(pdf, r.pagina, r.y, cacheRenders);
+        r._ocrTexto = texto.replace(/\s+/g," ").trim();
+        const {ticket, tipo} = parseOcrAluguel(texto, tickersConhecidos);
+        if(!r.ticket && ticket) r.ticket = ticket;
+        if(!r.tipo && tipo) r.tipo = tipo;
+      }catch(e){ console.error("OCR falhou numa linha:", e); }
+    }
+    status.textContent = `OCR concluído. Confira cada linha contra o PDF antes de gerar — o texto lido aparece na última coluna.`;
+    renderRevisaoAluguel();
+  }catch(err){
+    status.classList.add("err"); status.textContent = "Erro no OCR: " + err.message;
+    console.error(err);
+  }
 }
 // Gera lançamento só das linhas já classificadas — o resto continua na
 // tabela pra completar depois, sem travar quem já está pronto.
