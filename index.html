@@ -1044,6 +1044,14 @@ async function processarResgateEExtratoUnicred(){
     periodoRendimento = extrairPeriodo(linesResgate) || periodo;
     if(linesResgate.some(l=>/EXTRATO DE APLICA[ÇC][ÃA]O/i.test(l))){
       automaticos = await parseResgateFormatoLedger(arquivos.resgateUnicred, periodo);
+      // Este formato reverso-calcula o rendimentoPago a partir do IR (mesma
+      // conta ÷0,225 do CDB BTG) — não é o valor real do resgate, então
+      // casa com a linha do extrato pela data pra pegar o valor líquido de
+      // verdade (pra baixa de serviços).
+      automaticos = automaticos.map(a=>{
+        const match = resgateLines.find(r => a.data && dateKey(r.data)===dateKey(a.data));
+        return {...a, valorResgateBruto: match ? Math.abs(match.valor) : null};
+      });
     } else if(linesResgate.some(l=>/Lista de t[íi]tulos|Demonstrativo de Rentabilidade/i.test(l))){
       const titulos = await parseResgateFormatoTransposto(arquivos.resgateUnicred);
       // casa cada título com a linha de resgate do extrato (mesma lógica de
@@ -1052,7 +1060,7 @@ async function processarResgateEExtratoUnicred(){
       automaticos = titulos.map(t=>{
         const match = resgateLines.find(r => normalizeText(r.descricao).includes(t.titulo.slice(0,-1)))
                     || resgateLines.find(r => Math.abs(r.valor - t.rendimentoPago) < 0.01 || Math.abs(Math.abs(r.valor) - t.rendimentoPago) < 0.01);
-        return { data: match ? match.data : null, rendimentoPago: t.rendimentoPago, irRetido: t.irRetido, titulo: t.titulo };
+        return { data: match ? match.data : null, rendimentoPago: t.rendimentoPago, irRetido: t.irRetido, titulo: t.titulo, valorResgateBruto: match ? Math.abs(match.valor) : null };
       });
       rendimentoPeriodo = extrairRendimentoPeriodoTransposto(linesResgate);
     } else if(linesResgate.some(l=>/Informativo de Rentabilidade e Saldo/i.test(l))){
@@ -1073,6 +1081,7 @@ async function processarResgateEExtratoUnicred(){
       escritaRows.push({
         cnpj: CNPJ_UNICRED_CRICIUMA, data: a.data, acumulador: 51,
         valorServicos: a.rendimentoPago, valorContabil: a.rendimentoPago, baseCalculo: a.rendimentoPago, valorIRRF: a.irRetido,
+        valorRecebido: a.valorResgateBruto ?? a.rendimentoPago, // sem match no extrato = sem juros, usa o valor da nota mesmo
         origem: "Resgate Unicred" + (a.titulo?` (título ${a.titulo})`:""),
       });
       if(!a.data) ignoradas.push({origem:"Resgate Unicred", data:null, descricao:`Não achei a data no extrato pro título ${a.titulo} — confira antes de exportar.`, valor:a.rendimentoPago});
@@ -1198,9 +1207,11 @@ async function processarContaInvestimento(file){
     const ir = parseBRL(irStr);
     if(!ir || ir<=0) return;
     const servico = Math.round((ir/0.225)*100)/100;
+    const valorLiquido = parseBRL(m[m.length-1]); // última coluna da linha = Saldo/Valor Líquido
     escritaRows.push({
       cnpj: CNPJ_BANCO_BTG, data: brDateToParts(dataStr), acumulador: 51,
       valorServicos: servico, valorContabil: servico, baseCalculo: servico, valorIRRF: ir,
+      valorRecebido: valorLiquido, // pra baixa de serviços: resgate líquido (bruto − IRRF), não o valor da NF
       origem: "Conta Investimento BTG — CDB (resgate)",
     });
   });
@@ -1364,6 +1375,7 @@ function aplicarRevisaoResgate(){
     escritaRows.push({
       cnpj: CNPJ_UNICRED_CRICIUMA, data: r.data, acumulador: 51,
       valorServicos: rendimento, valorContabil: rendimento, baseCalculo: rendimento, valorIRRF: ir,
+      valorRecebido: r.valorResgateBruto, // extrato (conta corrente) já vem líquido — pra baixa de serviços
       origem: "Resgate Unicred",
     });
   });
@@ -1621,7 +1633,7 @@ function renderEscritaTable(){
     <button class="btn ghost small" onclick="numerarEscritaSequencial()">Numerar sequencialmente</button>
   </div>
   <div class="table-wrap"><table class="preview"><thead><tr>
-    <th>Origem</th><th>CNPJ</th><th>Nº Documento</th><th>Data</th><th>Acumulador</th><th>Valor Serviços</th><th>Base Cálculo</th><th>Valor IRRF</th><th></th>
+    <th>Origem</th><th>CNPJ</th><th>Nº Documento</th><th>Data</th><th>Acumulador</th><th>Valor Serviços</th><th>Base Cálculo</th><th>Valor IRRF</th><th>Valor Recebido (baixa)</th><th>Juros (baixa)</th><th></th>
   </tr></thead><tbody>`;
   escritaRows.forEach((r,i)=>{
     html += `<tr class="${r.data?'':'flag'}">
@@ -1633,6 +1645,8 @@ function renderEscritaTable(){
       <td class="cell"><input class="cell-input num" value="${fmtBRL(r.valorServicos)}" onchange="updateEscritaValor(${i},'valorServicos',this.value)"></td>
       <td class="cell"><input class="cell-input num" value="${r.baseCalculo!=null?fmtBRL(r.baseCalculo):''}" onchange="updateEscritaValor(${i},'baseCalculo',this.value)"></td>
       <td class="cell"><input class="cell-input num" value="${r.valorIRRF!=null?fmtBRL(r.valorIRRF):''}" onchange="updateEscritaValor(${i},'valorIRRF',this.value)"></td>
+      <td class="cell"><input class="cell-input num" value="${fmtBRL(valorRecebidoEscrita(r))}" onchange="updateEscritaValor(${i},'valorRecebido',this.value)"></td>
+      <td class="num">${fmtBRL(jurosEscrita(r))}</td>
       <td><button class="btn small ghost" onclick="escritaRows.splice(${i},1);renderEscritaTable();">✕</button></td>
     </tr>`;
   });
@@ -1640,6 +1654,7 @@ function renderEscritaTable(){
   <div class="btn-row">
     <button class="btn" onclick="downloadEscritaXlsx()">Baixar planilha (.xlsx)</button>
     <button class="btn ghost" onclick="downloadEscritaTxt()">Clique aqui para gerar o arquivo TXT para importação</button>
+    <button class="btn ghost" onclick="downloadBaixaServicosTxt()">Baixar TXT de Baixa de Serviços</button>
   </div>`;
   box.innerHTML = html;
 }
@@ -1661,6 +1676,32 @@ function downloadEscritaTxt(){
   const moneyIdx = [11,14,15,19];
   const lines = escritaRows.map(r=> escritaRowArray(r).map((v,i)=> moneyIdx.includes(i) ? fmtValorTxt(v) : stripAccentsForTxt(v)).join(";"));
   downloadText("ServicoPrest.txt", lines.join("\r\n"));
+}
+
+/* =========================================================================
+   BAIXA DE SERVIÇOS — dá baixa nas mesmas notas da Escrita Holding
+   ========================================================================= */
+// "Valor Recebido" pra baixa não é o valor da NF (que em resgate de CDB/RDC
+// é só a base de cálculo do IR, um valor pequeno — ver comentário na função
+// que gera essas linhas), é o valor líquido que realmente entrou no banco
+// (resgate − IRRF). A diferença entre os dois vira Juros, senão a baixa
+// nunca fecha o título contra o extrato. Nas notas que não são de
+// resgate de aplicação (Remunera+, aluguel, GT Clínica) não tem essa
+// diferença — usa o valor da própria nota, juros 0.
+function valorRecebidoEscrita(r){ return r.valorRecebido ?? r.valorServicos; }
+function jurosEscrita(r){ return Math.round((valorRecebidoEscrita(r) - (r.valorServicos||0))*100)/100; }
+function baixaServicosRowArray(r){
+  const dataFmt = r.data ? fmtDateBR(r.data) : "";
+  return [
+    r.numeroDocumento||"", onlyDigits(r.cnpj), dataFmt, dataFmt,
+    valorRecebidoEscrita(r), jurosEscrita(r), 0, 0, 0, 0, 0, 0,
+  ];
+}
+function downloadBaixaServicosTxt(){
+  const semNumero = escritaRows.filter(r=>!r.numeroDocumento);
+  if(semNumero.length){ alert(`${semNumero.length} nota(s) sem Nº Documento preenchido — numere todas (veja "Numerar sequencialmente" acima) antes de gerar a baixa.`); return; }
+  const lines = escritaRows.map(r=> baixaServicosRowArray(r).map(v=> typeof v==="number" ? fmtValorTxt(v) : v).join(";"));
+  downloadText("baixa_servicos.txt", lines.join("\r\n"));
 }
 
 /* =========================================================================
