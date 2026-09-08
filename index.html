@@ -177,12 +177,15 @@ code{background:var(--paper);padding:1px 5px;border-radius:3px;font-family:'IBM 
     </div>
 
     <div id="boxEscrita" class="card hidden">
-      <div class="section-title">Escrita Holding</div>
+      <div class="section-title">Notas Fiscais (Escrita Holding)</div>
       <div id="escritaResult"></div>
+      <div id="revisaoResgateResult"></div>
     </div>
     <div id="boxLanc" class="card hidden">
       <div class="section-title">Lançamentos Holding</div>
       <div id="lancResult"></div>
+      <div id="revisaoAluguelResult"></div>
+      <div id="revisaoContaCorrenteResult"></div>
     </div>
     <div id="boxIgnorados" class="card hidden">
       <div class="section-title">⚠ Linhas ignoradas / não reconhecidas — revisar manualmente</div>
@@ -1313,10 +1316,24 @@ async function processarContaRemunera(file){
 /* =========================================================================
    REVISÃO SEMI-AUTOMÁTICA — Resgate de Aplicação Unicred
    ========================================================================= */
+// As três "seções de lançamentos" originais (Lançamentos Holding, revisão
+// de Aluguel, revisão de Conta Corrente) e as duas de notas fiscais
+// (Escrita Holding, revisão de Resgate) viviam em cards soltos e
+// duplicavam os botões de download — unificadas em só 2 cards fixos no
+// HTML (#boxEscrita = Notas Fiscais, #boxLanc = Lançamentos), cada
+// revisão pendente vira uma sub-tabela dentro do card certo em vez de um
+// card próprio. Visibilidade de cada card depende de QUALQUER uma das
+// suas partes ter conteúdo.
+function updateBoxNotasFiscaisVisibility(){
+  document.getElementById("boxEscrita").classList.toggle("hidden", escritaRows.length===0 && revisaoResgate.length===0);
+}
+function updateBoxLancVisibility(){
+  document.getElementById("boxLanc").classList.toggle("hidden", lancRows.length===0 && revisaoAluguel.length===0 && revisaoContaCorrente.length===0);
+}
 function renderRevisaoResgate(){
-  if(!revisaoResgate.length){ const el=document.getElementById("revisaoResgateBox"); if(el) el.remove(); return; }
-  let el = document.getElementById("revisaoResgateBox");
-  if(!el){ el = document.createElement("div"); el.id="revisaoResgateBox"; el.className="card"; document.getElementById("screen-empresa").insertBefore(el, document.getElementById("boxIgnorados")); }
+  const el = document.getElementById("revisaoResgateResult");
+  updateBoxNotasFiscaisVisibility();
+  if(!revisaoResgate.length){ el.innerHTML = ""; return; }
   let html = `<div class="section-title">🔎 Resgate de Aplicação Unicred — confirme Rendimento Pago e IR Retido</div>
   <div class="help">O demonstrativo "Lista de títulos" desenha os títulos em colunas lado a lado, o que torna a leitura automática pouco confiável para um documento fiscal — confira os 2 valores no PDF e digite abaixo (a data e o valor do resgate já vêm do Extrato Unicred).</div>
   <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Descrição (extrato)</th><th>Valor do Resgate</th><th>Rendimento Pago</th><th>IR Retido</th><th></th></tr></thead><tbody>`;
@@ -1333,8 +1350,6 @@ function renderRevisaoResgate(){
   html += `</tbody></table></div>
   <div class="btn-row">
     <button class="btn" onclick="aplicarRevisaoResgate()">Gerar lançamento do resgate</button>
-    <button class="btn ghost" onclick="downloadEscritaXlsx()">Baixar planilha Escrita Holding (.xlsx)</button>
-    <button class="btn ghost" onclick="downloadEscritaTxt()">Baixar TXT de Serviços</button>
   </div>`;
   el.innerHTML = html;
 }
@@ -1361,10 +1376,9 @@ function aplicarRevisaoResgate(){
    REVISÃO SEMI-AUTOMÁTICA — Aluguel de Ações
    ========================================================================= */
 function renderRevisaoAluguel(){
-  const box = document.getElementById("boxIgnorados"); // reaproveita mesma área visualmente via cards extras
-  if(!revisaoAluguel.length) { const el=document.getElementById("revisaoAluguelBox"); if(el) el.remove(); return; }
-  let el = document.getElementById("revisaoAluguelBox");
-  if(!el){ el = document.createElement("div"); el.id="revisaoAluguelBox"; el.className="card"; document.getElementById("screen-empresa").insertBefore(el, document.getElementById("boxIgnorados")); }
+  const el = document.getElementById("revisaoAluguelResult");
+  updateBoxLancVisibility();
+  if(!revisaoAluguel.length) { el.innerHTML = ""; return; }
   let html = `<div class="section-title">🔎 Aluguel de ações (BTG) — confirme Empréstimo/Liquidação e o ticket antes de gerar</div>
   <div class="help">Este PDF não traz o rótulo do tipo de operação nem o ticker de forma legível pelo sistema (só imagem, não dá nem pra copiar o texto). Use <b>🔍 Tentar OCR</b> pra tentar reconhecer essas duas colunas automaticamente, mas <b>confira sempre contra o extrato</b> (seção "Renda variável — Movimentação — Ações | Aluguel") antes de gerar — OCR erra, principalmente com fonte pequena — <b>inclusive quando houver mais de um ticket alugado no mesmo mês</b> (o valor lançado usa o custo médio de cada ticket, não o "Preço de Referência" do relatório).</div>
   <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Qtde.</th><th>Taxa%</th><th>Valor Contratado (ref.)</th><th>Ticket</th><th>Tipo</th><th>Texto lido (OCR)</th><th></th></tr></thead><tbody>`;
@@ -1391,7 +1405,6 @@ function renderRevisaoAluguel(){
     <button class="btn" onclick="aplicarRevisaoAluguel()">Gerar lançamentos do aluguel</button>
     <button class="btn ghost" onclick="tentarOcrAluguel()">🔍 Tentar OCR nas linhas sem ticket/tipo</button>
   </div>
-  <div class="help" style="margin:8px 0 0;">Os lançamentos gerados aqui entram direto na tabela <b>Lançamentos Holding</b> logo acima — baixe a planilha/TXT por lá, num único lugar pra toda a empresa.</div>
   <div id="aluguelOcrStatus" class="status-line hidden"></div>`;
   el.innerHTML = html;
 }
@@ -1468,10 +1481,11 @@ function aplicarRevisaoAluguel(){
    REVISÃO SEMI-AUTOMÁTICA — Conta Corrente BTG
    ========================================================================= */
 function renderRevisaoContaCorrente(){
-  if(!revisaoContaCorrente.length){ const el=document.getElementById("revisaoCCBox"); if(el) el.remove(); return; }
-  let el = document.getElementById("revisaoCCBox");
-  if(!el){ el = document.createElement("div"); el.id="revisaoCCBox"; el.className="card"; document.getElementById("screen-empresa").insertBefore(el, document.getElementById("boxIgnorados")); }
+  const el = document.getElementById("revisaoContaCorrenteResult");
+  updateBoxLancVisibility();
+  if(!revisaoContaCorrente.length){ el.innerHTML = ""; return; }
   let html = `<div class="section-title">🔎 Conta corrente BTG (Conta Investimento) — classifique cada linha</div>
+  <div class="help" style="margin-bottom:4px;">Algumas categorias abaixo (taxa/IR de remuneração, corretagem) geram nota em <b>Notas Fiscais</b> em vez de lançamento — a linha some daqui e aparece lá quando você gerar.</div>
   <div class="help">Este PDF não traz a descrição de forma legível pelo sistema — escolha a categoria de cada linha (pelo valor e pela ordem, comparando com o extrato original) antes de gerar os lançamentos. Linhas de "Emissão CDB" e "Corretagem aluguel" já cobertas por outra fonte (ex.: Nota de Corretagem) devem ficar como "Ignorar".</div>
   <div class="table-wrap"><table class="preview"><thead><tr><th>Data</th><th>Valor</th><th>Categoria</th><th>Texto lido (OCR)</th><th></th></tr></thead><tbody>`;
   revisaoContaCorrente.forEach((r,i)=>{
@@ -1497,10 +1511,7 @@ function renderRevisaoContaCorrente(){
   <div class="btn-row">
     <button class="btn" onclick="aplicarRevisaoContaCorrente()">Gerar lançamentos da conta corrente</button>
     <button class="btn ghost" onclick="tentarOcrContaCorrente()">🔍 Tentar OCR nas linhas sem categoria</button>
-    <button class="btn ghost" onclick="downloadEscritaXlsx()">Baixar planilha Escrita Holding (.xlsx)</button>
-    <button class="btn ghost" onclick="downloadEscritaTxt()">Baixar TXT de Serviços</button>
   </div>
-  <div class="help" style="margin:8px 0 0;">Os lançamentos gerados aqui entram direto na tabela <b>Lançamentos Holding</b> — baixe a planilha/TXT por lá, num único lugar pra toda a empresa.</div>
   <div id="ccOcrStatus" class="status-line hidden"></div>`;
   el.innerHTML = html;
 }
@@ -1595,9 +1606,9 @@ function escritaRowArray(r){
 }
 let escritaUltimaNota = ""; // sobrevive a re-renders da tabela (o input é recriado a cada render)
 function renderEscritaTable(){
-  const box = document.getElementById("boxEscrita");
-  document.getElementById("boxEscrita").classList.toggle("hidden", escritaRows.length===0);
-  if(!escritaRows.length) return;
+  const box = document.getElementById("escritaResult");
+  updateBoxNotasFiscaisVisibility();
+  if(!escritaRows.length){ box.innerHTML = ""; return; }
   const totalServicos = escritaRows.reduce((s,r)=>s+(r.valorServicos||0),0);
   let html = `<div class="summary-row">
     <div class="item"><div class="k">Linhas</div><div class="v">${escritaRows.length}</div></div>
@@ -1631,7 +1642,6 @@ function renderEscritaTable(){
     <button class="btn ghost" onclick="downloadEscritaTxt()">Clique aqui para gerar o arquivo TXT para importação</button>
   </div>`;
   box.innerHTML = html;
-  document.getElementById("boxEscrita").querySelector(".section-title") || (box.parentElement.querySelector(".section-title"));
 }
 function updateEscritaValor(i, field, val){ const n=parseBRL(val); escritaRows[i][field]= (val.trim()==="") ? null : n; renderEscritaTable(); }
 // Numera as notas em sequência a partir da última já emitida, na ordem
@@ -1690,9 +1700,9 @@ function sortTh(stateVarName, state, col, label, rerenderFnName){
 }
 let lancTableState = makeTableState();
 function renderLancTable(){
-  const box = document.getElementById("boxLanc");
-  document.getElementById("boxLanc").classList.toggle("hidden", lancRows.length===0);
-  if(!lancRows.length) return;
+  const box = document.getElementById("lancResult");
+  updateBoxLancVisibility();
+  if(!lancRows.length){ box.innerHTML = ""; return; }
   const totalValor = lancRows.reduce((s,r)=>s+(r.valor||0),0);
   const nExcl = lancRows.filter(r=>r.incluir===false).length;
   const indexed = filterSortRows(lancRows, lancTableState, r=>[r.origem,r.debito,r.credito,r.complemento]);
