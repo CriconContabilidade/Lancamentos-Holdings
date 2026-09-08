@@ -267,7 +267,11 @@ const PADROES_SEED = [
   {codigo:3, descricao:"Dividendos recebidos - GT Clínica", keywords:["GT CLINICA","GT CLÍNICA"], debito:7, credito:13, hist:1},
   {codigo:4, descricao:"Ignorar — resgate de aplicação (tratado na função dedicada de Resgate Unicred)", keywords:["RESGATE APLICACAO FINANCEIRA","RESGATE APLICAÇÃO FINANCEIRA","RESG APLIC FINANC"], ignorar:true},
   {codigo:5, descricao:"Dividendos recebidos - GT Clínica (transferência doc. 1662058)", keywords:["1662058"], debito:7, credito:13, hist:1},
-  {codigo:6, descricao:"Distribuição de lucros - GBG (transferência doc. 1067737, valor a partir de R$400,00)", keywords:["1067737"], debito:22, credito:7, hist:null, empresas:["GBG"], valorMinimo:400},
+  {codigo:6, descricao:"Distribuição de lucros - GBG (transferência doc. 1067737, valor a partir de R$400,00)", keywords:["1067737"], empresas:["GBG"], valorMinimo:400,
+    lancamentos:[
+      {debito:22, credito:7},
+      {debito:262, credito:22, complemento:"VALOR REF. LUCROS A DISTRIBUIR AO SÓCIO GIOVANNY BONELLI GUIDI"},
+    ]},
   {codigo:13, descricao:"Pagamento de combustível - GBG (transferência doc. 1067737, valor abaixo de R$400,00)", keywords:["1067737"], empresas:["GBG"], valorMaximo:399.99,
     lancamentos:[
       {debito:346, credito:7, complemento:"PAGAMENTO REF. COMBUSTIVEL"},
