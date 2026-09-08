@@ -433,23 +433,47 @@ function onlyDigits(s){ return (s||"").replace(/\D/g,""); }
 
 /* Navegação por teclado (padrão em todas as ferramentas): dentro de uma
    tabela editável, seta cima/baixo e Enter movem o foco para o mesmo campo
-   (mesma coluna) na linha anterior/seguinte, como no Excel. Não interfere
-   em seta esquerda/direita (cursor de texto) nem fora de tabelas. */
+   (mesma coluna) na linha anterior/seguinte, como no Excel. Esquerda/direita
+   fazem o mesmo entre colunas da mesma linha, pulando células sem campo —
+   mas só quando o cursor de texto já está na borda do valor, pra não
+   atrapalhar mover o cursor no meio do texto digitado. */
 document.addEventListener("keydown", function(e){
-  if(e.key!=="ArrowUp" && e.key!=="ArrowDown" && e.key!=="Enter") return;
+  const teclasNav = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Enter"];
+  if(!teclasNav.includes(e.key)) return;
   const alvo = e.target;
   if(!alvo.matches || !alvo.matches("input, select, textarea")) return;
   if(alvo.tagName==="TEXTAREA" && e.key==="Enter") return;
+  const lateral = e.key==="ArrowLeft" || e.key==="ArrowRight";
+  if(lateral && alvo.tagName!=="SELECT"){
+    // Conta como "na borda" tanto o cursor solto na posição 0/fim quanto o
+    // texto inteiro selecionado (é o que sobra depois de campo.select() ao
+    // chegar num campo pela navegação) — senão a primeira seta depois de
+    // pousar num campo só desmarcaria a seleção em vez de já navegar.
+    const noInicio = alvo.selectionStart===0;
+    const noFim = alvo.selectionEnd===alvo.value.length;
+    if(e.key==="ArrowLeft" && !noInicio) return;
+    if(e.key==="ArrowRight" && !noFim) return;
+  }
   const celula = alvo.closest("td, th");
   if(!celula) return;
   const linha = celula.parentElement;
-  const indiceCelula = Array.prototype.indexOf.call(linha.children, celula);
-  const corpo = linha.parentElement;
-  const linhas = Array.prototype.filter.call(corpo.children, l => l.tagName==="TR");
-  const indiceLinha = linhas.indexOf(linha);
-  const linhaAlvo = e.key==="ArrowUp" ? linhas[indiceLinha-1] : linhas[indiceLinha+1];
-  if(!linhaAlvo) return;
-  const celulaAlvo = linhaAlvo.children[indiceCelula];
+  let celulaAlvo;
+  if(lateral){
+    const celulas = Array.prototype.filter.call(linha.children, c => c.tagName==="TD" || c.tagName==="TH");
+    let idx = celulas.indexOf(celula);
+    do{
+      idx += e.key==="ArrowLeft" ? -1 : 1;
+      celulaAlvo = celulas[idx];
+    } while(celulaAlvo && !celulaAlvo.querySelector("input, select, textarea"));
+  } else {
+    const indiceCelula = Array.prototype.indexOf.call(linha.children, celula);
+    const corpo = linha.parentElement;
+    const linhas = Array.prototype.filter.call(corpo.children, l => l.tagName==="TR");
+    const indiceLinha = linhas.indexOf(linha);
+    const linhaAlvo = e.key==="ArrowUp" ? linhas[indiceLinha-1] : linhas[indiceLinha+1];
+    if(!linhaAlvo) return;
+    celulaAlvo = linhaAlvo.children[indiceCelula];
+  }
   if(!celulaAlvo) return;
   const campo = celulaAlvo.querySelector("input, select, textarea");
   if(!campo) return;
