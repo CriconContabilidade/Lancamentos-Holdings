@@ -267,7 +267,11 @@ const PADROES_SEED = [
   {codigo:3, descricao:"Dividendos recebidos - GT Clínica", keywords:["GT CLINICA","GT CLÍNICA"], debito:7, credito:13, hist:1},
   {codigo:4, descricao:"Ignorar — resgate de aplicação (tratado na função dedicada de Resgate Unicred)", keywords:["RESGATE APLICACAO FINANCEIRA","RESGATE APLICAÇÃO FINANCEIRA","RESG APLIC FINANC"], ignorar:true},
   {codigo:5, descricao:"Dividendos recebidos - GT Clínica (transferência doc. 1662058)", keywords:["1662058"], debito:7, credito:13, hist:1},
-  {codigo:6, descricao:"Distribuição de lucros - GBG (transferência doc. 1067737) — confira, às vezes é ressarcimento de despesa (ex. combustível) e não distribuição", keywords:["1067737"], debito:22, credito:7, hist:null, empresas:["GBG"]},
+  {codigo:6, descricao:"Distribuição de lucros - GBG (transferência doc. 1067737, valor a partir de R$400,00)", keywords:["1067737"], debito:22, credito:7, hist:null, empresas:["GBG"], valorMinimo:400},
+  {codigo:13, descricao:"Pagamento de combustível - GBG (transferência doc. 1067737, valor abaixo de R$400,00)", keywords:["1067737"], empresas:["GBG"], valorMaximo:399.99,
+    lancamentos:[
+      {debito:346, credito:7, complemento:"PAGAMENTO REF. COMBUSTIVEL"},
+    ]},
   {codigo:7, descricao:"Empréstimo de mútuo com Guidi Administradora de Bens - GBG (transferência doc. 5498147)", keywords:["5498147"], debito:34, credito:7, hist:null, empresas:["GBG"]},
   {codigo:8, descricao:"Distribuição de lucros - LTA (transferência doc. 1540947)", keywords:["1540947"], empresas:["LTA"],
     lancamentos:[
@@ -324,9 +328,11 @@ function loadPadroes(){
       existing.lancamentos.forEach((l,i)=>{ if(l.credito===7 && seed.lancamentos[i] && seed.lancamentos[i].credito===34) l.credito = 34; });
     }
     // Pix pro André abaixo de R$1.999 é pró-labore, não distribuição de
-    // lucros (codigo:12 cobre esses valores, ignorando) — quem já tinha o
-    // padrão 11 salvo sem essa faixa pegava tudo como distribuição.
-    if(seed.codigo===11 && seed.valorMinimo!=null && existing.valorMinimo==null){
+    // lucros (codigo:12 cobre esses valores, ignorando); doc 1067737 da GBG
+    // abaixo de R$400 é combustível, não distribuição (codigo:13) — quem já
+    // tinha os padrões 11/6 salvos sem essa faixa pegava tudo como
+    // distribuição.
+    if((seed.codigo===11 || seed.codigo===6) && seed.valorMinimo!=null && existing.valorMinimo==null){
       existing.valorMinimo = seed.valorMinimo;
     }
   });
@@ -846,6 +852,28 @@ let saldoBrutoAplicacaoCalculadoRef = "";
 function renderSaldoAnteriorBox(){
   const box = document.getElementById("empresaSaldoAnteriorBox");
   if(currentEmpresa.temUnicred===false){ box.innerHTML = ""; return; }
+  const registros = contasAplicacaoDB.filter(c=>c.empresaId===currentEmpresa.id);
+  if(registros.length){
+    let html = `<div class="field" style="margin-top:10px;">
+      <label>Aplicações Financeiras (RDC/CDB) — contas por título</label>
+      <div class="small" style="color:var(--ink-soft);font-size:11px;margin-bottom:6px;">Cada título tem sua própria conta contábil de "Aplicação". "Saldo Anterior" só é usado pra calcular o rendimento de título já existente (rola automaticamente pro mês seguinte depois de cada processamento) — título novo (aplicado dentro do mês do relatório) não precisa disso.</div>
+      <div class="table-wrap"><table class="preview"><thead><tr><th>Título</th><th>Conta</th><th>Saldo Anterior</th><th>Mês Ref.</th><th></th></tr></thead><tbody>`;
+    registros.forEach(r=>{
+      const idx = contasAplicacaoDB.indexOf(r);
+      html += `<tr>
+        <td class="cell"><input class="cell-input" style="width:120px" value="${r.titulo}" onchange="contasAplicacaoDB[${idx}].titulo=this.value.trim();saveContasAplicacao(contasAplicacaoDB)"></td>
+        <td class="cell"><input class="cell-input" style="width:60px" value="${r.conta??''}" onchange="contasAplicacaoDB[${idx}].conta=this.value.trim()===''?null:this.value.trim();saveContasAplicacao(contasAplicacaoDB)"></td>
+        <td class="cell"><input class="cell-input num" value="${r.saldoAnterior!=null?fmtBRL(r.saldoAnterior):''}" onchange="contasAplicacaoDB[${idx}].saldoAnterior=this.value.trim()===''?null:(parseBRL(this.value)||0);saveContasAplicacao(contasAplicacaoDB)"></td>
+        <td>${r.mesAnoSaldoAnterior||''}</td>
+        <td><button class="btn small ghost" onclick="contasAplicacaoDB.splice(${idx},1);saveContasAplicacao(contasAplicacaoDB);renderSaldoAnteriorBox();">✕</button></td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>
+      <div class="btn-row"><button class="btn ghost small" onclick="addContaAplicacaoRow()">+ Novo título</button></div>
+    </div>`;
+    box.innerHTML = html;
+    return;
+  }
   box.innerHTML = `<div class="field" style="max-width:360px;margin-top:10px;">
     <label>Saldo anterior da aplicação (RDC/CDB Unicred)</label>
     <input class="cell-input" style="width:100%" value="${saldoAnteriorAplicacao}" placeholder="ex. 495296,76" onchange="saldoAnteriorAplicacao=this.value">
@@ -856,6 +884,11 @@ function renderSaldoAnteriorBox(){
     <div style="font-weight:600;">R$ ${fmtBRL(saldoBrutoAplicacaoCalculado)}</div>
     <div class="small" style="color:var(--ink-soft);font-size:11px;margin-top:2px;">Referente a ${saldoBrutoAplicacaoCalculadoRef} — já salvo pra pré-preencher o "Saldo anterior" do mês seguinte.</div>
   </div>` : ""}`;
+}
+function addContaAplicacaoRow(){
+  contasAplicacaoDB.push({empresaId:currentEmpresa.id, titulo:"", conta:null, saldoAnterior:null, mesAnoSaldoAnterior:""});
+  saveContasAplicacao(contasAplicacaoDB);
+  renderSaldoAnteriorBox();
 }
 function wireDropzone(dropId, inputId, onFiles){
   const drop = document.getElementById(dropId);
@@ -1112,6 +1145,85 @@ function extrairSaldoBrutoAplicacaoLedger(lines){
   const saldoBruto = Math.round((totalAplicado + totalRendimento - totalResgatado)*100)/100;
   return { saldoBruto, dataValores, aportesNovos: Math.round(aportesNovos*100)/100 };
 }
+/* =========================================================================
+   CONTAS DE APLICAÇÃO POR TÍTULO (GBG) — cada título RDC/CDB na sua
+   própria conta contábil, em vez de uma conta única "Aplicação" pra tudo.
+   ========================================================================= */
+const CONTAS_APLICACAO_SEED = [
+  {empresaId:"GBG", titulo:"26212002503", conta:20},
+  {empresaId:"GBG", titulo:"26212002708", conta:49},
+  {empresaId:"GBG", titulo:"31212000093", conta:50},
+  {empresaId:"GBG", titulo:"31212000257", conta:52},
+];
+function loadContasAplicacao(){
+  const raw = localStorage.getItem("holdings_contas_aplicacao");
+  let list = raw ? JSON.parse(raw) : [];
+  CONTAS_APLICACAO_SEED.forEach(seed=>{
+    const existing = list.find(c=>c.empresaId===seed.empresaId && c.titulo===seed.titulo);
+    if(!existing) list.push({...seed, saldoAnterior:null, mesAnoSaldoAnterior:""});
+  });
+  saveContasAplicacao(list);
+  return list;
+}
+function saveContasAplicacao(list){ localStorage.setItem("holdings_contas_aplicacao", JSON.stringify(list)); }
+let contasAplicacaoDB = loadContasAplicacao();
+function getContaAplicacaoTitulo(empresaId, titulo){ return contasAplicacaoDB.find(c=>c.empresaId===empresaId && c.titulo===titulo) || null; }
+function empresaTemContasAplicacaoPorTitulo(empresaId){ return contasAplicacaoDB.some(c=>c.empresaId===empresaId); }
+// Extrai um bloco por título do formato "EXTRATO DE APLICAÇÃO" — cada
+// título tem seu próprio conjunto de totais (Valor Aplicado, Valor
+// Resgatado, Rendimento do Período acumulado desde a aplicação, Data
+// Aplicação) na sequência em que aparecem no relatório.
+function extrairBlocosAplicacaoLedger(lines){
+  const blocos = [];
+  let atual = null;
+  lines.forEach(line=>{
+    const mTit = line.match(/T[íi]tulo:\s*(\d+)$/);
+    if(mTit){ atual = { titulo: mTit[1], valorAplicado:0, valorResgatado:0, rendimentoPeriodo:0, dataAplicacao:null, dataValores:null }; blocos.push(atual); return; }
+    if(!atual) return;
+    let m;
+    if(m=line.match(/^Data Aplica[çc][ãa]o:\s*(\d{2}\/\d{2}\/\d{4})\s+Valor Aplicado:/)) atual.dataAplicacao = brDateToParts(m[1]);
+    else if(m=line.match(/^Valor Aplicado:\s*([\d.,]+)$/)) atual.valorAplicado = parseBRL(m[1])||0;
+    else if(m=line.match(/^Valor Resgatado:\s*([\d.,]+)$/)) atual.valorResgatado = parseBRL(m[1])||0;
+    else if(m=line.match(/^Rendimento do Per[íi]odo:\s*(-?[\d.,]+)$/)) atual.rendimentoPeriodo = parseBRL(m[1])||0;
+    else if(m=line.match(/^Valores em:\s*(\d{2}\/\d{2}\/\d{4})$/)) atual.dataValores = brDateToParts(m[1]);
+  });
+  return blocos;
+}
+// Gera 1 lançamento de rendimento por título (D: conta do título, C:395).
+// Título aberto dentro do mês do relatório é tratado como saldo anterior
+// zero + aporte novo = valor aplicado (é a estreia dele, não teve saldo
+// antes) — não precisa que o usuário informe nada; título já existente
+// precisa do saldo anterior cadastrado na tabela da tela (rola
+// automaticamente pro mês seguinte depois de cada processamento).
+function gerarRendimentoAplicacaoPorTitulo(linesResgate){
+  const blocos = extrairBlocosAplicacaoLedger(linesResgate);
+  blocos.forEach(b=>{
+    if(!b.dataValores) return;
+    const mesAno = String(b.dataValores.m).padStart(2,"0") + "/" + b.dataValores.y;
+    const ehNovo = b.dataAplicacao && b.dataAplicacao.y===b.dataValores.y && b.dataAplicacao.m===b.dataValores.m;
+    const saldoBruto = Math.round((b.valorAplicado + b.rendimentoPeriodo - b.valorResgatado)*100)/100;
+    let registro = getContaAplicacaoTitulo(currentEmpresa.id, b.titulo);
+    if(!registro){ registro = {empresaId:currentEmpresa.id, titulo:b.titulo, conta:null, saldoAnterior:null, mesAnoSaldoAnterior:""}; contasAplicacaoDB.push(registro); }
+    const saldoAnterior = ehNovo ? 0 : registro.saldoAnterior;
+    const aporteNovo = ehNovo ? b.valorAplicado : 0;
+    if(saldoAnterior==null){
+      ignoradas.push({origem:"Resgate Unicred — rendimento do período", data:b.dataValores, descricao:`Título ${b.titulo}: preencha o "Saldo Anterior" dele na tabela "Aplicações Financeiras" (acima do botão Processar) e processe de novo.`, valor:null});
+      return;
+    }
+    const rendimento = Math.round((saldoBruto - saldoAnterior - aporteNovo)*100)/100;
+    if(rendimento>0){
+      lancRows.push({
+        data: b.dataValores, debito: registro.conta, credito: 395, valor: rendimento, codHist: null,
+        complemento: `VALOR REF. RENDIMENTO DE APLICAÇÃO FINANCEIRA ${mesAno} - RDC UNICRED TÍTULO ${b.titulo}`,
+        origem: "Resgate Unicred — rendimento do período (título "+b.titulo+")",
+      });
+    }
+    registro.saldoAnterior = saldoBruto;
+    registro.mesAnoSaldoAnterior = mesAno;
+  });
+  saveContasAplicacao(contasAplicacaoDB);
+  renderSaldoAnteriorBox();
+}
 // Guarda o saldo bruto calculado de um mês pra sugerir automaticamente
 // como "saldo anterior" no processamento do mês seguinte — evita o
 // usuário ter que ir atrás do valor no extrato/planilha de novo.
@@ -1151,33 +1263,39 @@ async function processarResgateEExtratoUnicred(){
         return {...a, valorResgateBruto: match ? Math.abs(match.valor) : null};
       });
       // Esse formato não traz "Rendimento do Período" do mês pronto — calcula
-      // pela diferença de saldo bruto (ver extrairSaldoBrutoAplicacaoLedger),
-      // usando o saldo anterior informado no campo da tela. Título novo
-      // aberto dentro do mês é aporte, não rendimento (confirmado pelo
-      // usuário) — desconta do rendimento calculado, senão infla o
-      // lançamento e duplica o aporte (que já é lançado à parte pelo
-      // padrão "Aplicação Financeira" no extrato bancário).
-      const { saldoBruto, dataValores, aportesNovos } = extrairSaldoBrutoAplicacaoLedger(linesResgate);
-      if(dataValores){
-        const mesAnoNovo = String(dataValores.m).padStart(2,"0") + "/" + dataValores.y;
-        // Saldo bruto calculado sempre fica salvo (pré-preenche o mês
-        // seguinte) e visível na tela, independente de ter conseguido gerar
-        // o lançamento do rendimento deste mês ou não.
-        saveSaldoAplicacaoAtual(currentEmpresa.id, mesAnoNovo, saldoBruto);
-        saldoBrutoAplicacaoCalculado = saldoBruto;
-        saldoBrutoAplicacaoCalculadoRef = mesAnoNovo;
-        const saldoAnterior = parseBRL(saldoAnteriorAplicacao);
-        if(saldoAnterior){
-          rendimentoPeriodo = Math.round((saldoBruto - saldoAnterior - aportesNovos)*100)/100;
-          periodoRendimento = { fim: dataValores };
-          saldoAnteriorAplicacao = String(saldoBruto).replace(".", ",");
-          saldoAnteriorAplicacaoRef = mesAnoNovo;
-        } else {
-          let pm = dataValores.m - 1, py = dataValores.y;
-          if(pm===0){ pm = 12; py -= 1; }
-          ignoradas.push({origem:"Resgate Unicred — rendimento do período", data:dataValores, descricao:`Formato "Extrato de Aplicação" sem rendimento do mês pronto — preencha o campo "Saldo anterior da aplicação" (acima do botão Processar) com o saldo bruto de ${String(pm).padStart(2,"0")}/${py} e processe de novo pra gerar o lançamento do rendimento.`, valor:null});
+      // pela diferença de saldo bruto. Empresa com contas cadastradas por
+      // título (ex. GBG) gera 1 lançamento por título, cada um na sua conta;
+      // sem cadastro (EBR/LTA) usa o modo agregado antigo (1 lançamento só,
+      // com o saldo anterior do campo único da tela).
+      if(empresaTemContasAplicacaoPorTitulo(currentEmpresa.id)){
+        gerarRendimentoAplicacaoPorTitulo(linesResgate);
+      } else {
+        // Título novo aberto dentro do mês é aporte, não rendimento
+        // (confirmado pelo usuário) — desconta do rendimento calculado,
+        // senão infla o lançamento e duplica o aporte (que já é lançado à
+        // parte pelo padrão "Aplicação Financeira" no extrato bancário).
+        const { saldoBruto, dataValores, aportesNovos } = extrairSaldoBrutoAplicacaoLedger(linesResgate);
+        if(dataValores){
+          const mesAnoNovo = String(dataValores.m).padStart(2,"0") + "/" + dataValores.y;
+          // Saldo bruto calculado sempre fica salvo (pré-preenche o mês
+          // seguinte) e visível na tela, independente de ter conseguido gerar
+          // o lançamento do rendimento deste mês ou não.
+          saveSaldoAplicacaoAtual(currentEmpresa.id, mesAnoNovo, saldoBruto);
+          saldoBrutoAplicacaoCalculado = saldoBruto;
+          saldoBrutoAplicacaoCalculadoRef = mesAnoNovo;
+          const saldoAnterior = parseBRL(saldoAnteriorAplicacao);
+          if(saldoAnterior){
+            rendimentoPeriodo = Math.round((saldoBruto - saldoAnterior - aportesNovos)*100)/100;
+            periodoRendimento = { fim: dataValores };
+            saldoAnteriorAplicacao = String(saldoBruto).replace(".", ",");
+            saldoAnteriorAplicacaoRef = mesAnoNovo;
+          } else {
+            let pm = dataValores.m - 1, py = dataValores.y;
+            if(pm===0){ pm = 12; py -= 1; }
+            ignoradas.push({origem:"Resgate Unicred — rendimento do período", data:dataValores, descricao:`Formato "Extrato de Aplicação" sem rendimento do mês pronto — preencha o campo "Saldo anterior da aplicação" (acima do botão Processar) com o saldo bruto de ${String(pm).padStart(2,"0")}/${py} e processe de novo pra gerar o lançamento do rendimento.`, valor:null});
+          }
+          renderSaldoAnteriorBox();
         }
-        renderSaldoAnteriorBox();
       }
     } else if(linesResgate.some(l=>/Lista de t[íi]tulos|Demonstrativo de Rentabilidade/i.test(l))){
       const titulos = await parseResgateFormatoTransposto(arquivos.resgateUnicred);
@@ -1225,6 +1343,19 @@ async function processarExtratoUnicred(file, jaExtraido){
   const txns = jaExtraido!=null ? jaExtraido : await parseExtratoUnicred(file);
   txns.forEach(txn=>{
     if(pareceResgateAplicacao(txn.descricao)) return; // já tratado no resgate automático/revisão
+    // Empresa com contas cadastradas por título (ex. GBG): "Aplicação
+    // Financeira" credita a conta do título específico, não uma conta
+    // genérica — o nº de documento do extrato é o título sem o último
+    // dígito (mesma convenção usada pra casar resgate/distribuição em
+    // outros lugares da ferramenta).
+    if(empresaTemContasAplicacaoPorTitulo(currentEmpresa.id) && /APLICA[ÇC][ÃA]O\s+FINANC|APLIC\s+FINANC/i.test(normalizeText(txn.descricao))){
+      const mDoc = txn.descricao.trim().match(/^(\d+)/);
+      const registro = mDoc && contasAplicacaoDB.find(c=>c.empresaId===currentEmpresa.id && c.titulo && c.titulo.startsWith(mDoc[1]));
+      if(registro){
+        lancRows.push({data:txn.data, debito:registro.conta, credito:currentEmpresa.contaBanco, valor:Math.abs(txn.valor), codHist:80, complemento:null, origem:"Extrato Unicred — aplicação financeira (título "+registro.titulo+")"});
+        return;
+      }
+    }
     // Padrão específico (por doc./palavra-chave) tem prioridade sobre o
     // lançamento genérico de sócio — um mesmo doc. pode gerar mais de uma
     // linha no extrato (ex.: transferência + PIX complementar com o nome
