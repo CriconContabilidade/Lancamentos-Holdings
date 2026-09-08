@@ -1076,17 +1076,29 @@ function extrairRendimentoPeriodoIRS(lines){
 // linha "Data Aplicação: ... Valor Aplicado: ... Data Vencimento: ...",
 // que não bate ancorada). Saldo bruto = valor aplicado + rendimento do
 // período (acumulado) − valor resgatado, somado entre todos os títulos.
+// Título novo aberto DENTRO do mês do relatório (mesmo mês/ano de "Valores
+// em") não é rendimento, é aporte — confirmado pelo usuário — por isso o
+// valor aplicado desses títulos é separado (aportesNovos) e descontado do
+// rendimento do mês no lugar que chama esta função.
 function extrairSaldoBrutoAplicacaoLedger(lines){
   let totalAplicado=0, totalResgatado=0, totalRendimento=0, dataValores=null;
+  lines.forEach(line=>{
+    const m = line.match(/^Valores em:\s*(\d{2}\/\d{2}\/\d{4})$/);
+    if(m) dataValores = brDateToParts(m[1]);
+  });
+  let aportesNovos = 0;
   lines.forEach(line=>{
     let m;
     if(m=line.match(/^Valor Aplicado:\s*([\d.,]+)$/)) totalAplicado += parseBRL(m[1])||0;
     else if(m=line.match(/^Valor Resgatado:\s*([\d.,]+)$/)) totalResgatado += parseBRL(m[1])||0;
     else if(m=line.match(/^Rendimento do Per[íi]odo:\s*(-?[\d.,]+)$/)) totalRendimento += parseBRL(m[1])||0;
-    else if(m=line.match(/^Valores em:\s*(\d{2}\/\d{2}\/\d{4})$/)) dataValores = brDateToParts(m[1]);
+    else if(m=line.match(/^Data Aplica[çc][ãa]o:\s*(\d{2}\/\d{2}\/\d{4})\s+Valor Aplicado:\s*([\d.,]+)\s+Data Vencimento:/)){
+      const dataAplic = brDateToParts(m[1]);
+      if(dataValores && dataAplic && dataAplic.y===dataValores.y && dataAplic.m===dataValores.m) aportesNovos += parseBRL(m[2])||0;
+    }
   });
   const saldoBruto = Math.round((totalAplicado + totalRendimento - totalResgatado)*100)/100;
-  return { saldoBruto, dataValores };
+  return { saldoBruto, dataValores, aportesNovos: Math.round(aportesNovos*100)/100 };
 }
 // Guarda o saldo bruto calculado de um mês pra sugerir automaticamente
 // como "saldo anterior" no processamento do mês seguinte — evita o
@@ -1128,11 +1140,15 @@ async function processarResgateEExtratoUnicred(){
       });
       // Esse formato não traz "Rendimento do Período" do mês pronto — calcula
       // pela diferença de saldo bruto (ver extrairSaldoBrutoAplicacaoLedger),
-      // usando o saldo anterior informado no campo da tela.
-      const { saldoBruto, dataValores } = extrairSaldoBrutoAplicacaoLedger(linesResgate);
+      // usando o saldo anterior informado no campo da tela. Título novo
+      // aberto dentro do mês é aporte, não rendimento (confirmado pelo
+      // usuário) — desconta do rendimento calculado, senão infla o
+      // lançamento e duplica o aporte (que já é lançado à parte pelo
+      // padrão "Aplicação Financeira" no extrato bancário).
+      const { saldoBruto, dataValores, aportesNovos } = extrairSaldoBrutoAplicacaoLedger(linesResgate);
       const saldoAnterior = parseBRL(saldoAnteriorAplicacao);
       if(saldoAnterior && dataValores){
-        rendimentoPeriodo = Math.round((saldoBruto - saldoAnterior)*100)/100;
+        rendimentoPeriodo = Math.round((saldoBruto - saldoAnterior - aportesNovos)*100)/100;
         periodoRendimento = { fim: dataValores };
         const mesAnoNovo = String(dataValores.m).padStart(2,"0") + "/" + dataValores.y;
         saveSaldoAplicacaoAtual(currentEmpresa.id, mesAnoNovo, saldoBruto);
