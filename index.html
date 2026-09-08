@@ -188,6 +188,13 @@ code{background:var(--paper);padding:1px 5px;border-radius:3px;font-family:'IBM 
       <div class="section-title">⚠ Linhas ignoradas / não reconhecidas — revisar manualmente</div>
       <div id="ignoradosResult"></div>
     </div>
+
+    <div id="boxCustoAcoes" class="card hidden">
+      <div class="section-title">📈 Ações compradas/alugadas — contas contábeis</div>
+      <div class="help">Cadastre o ticket e o nº da conta contábil (Domínio) de cada ação negociada/alugada por esta holding. É usado pra gerar corretamente o Débito/Crédito dos lançamentos de compra, aluguel e dividendos das Notas de Corretagem e da Conta Investimento BTG. Enquanto a conta estiver em branco, os lançamentos saem com o Débito em branco pra você completar.</div>
+      <div class="table-wrap"><table class="preview" id="empresaCustoTable"></table></div>
+      <div class="btn-row"><button class="btn" onclick="addCustoRowEmpresa()">+ Nova ação</button></div>
+    </div>
   </div>
 
   <!-- ===================== CADASTRO: Lançamentos Padrões ===================== -->
@@ -229,7 +236,7 @@ const EMPRESAS = [
     contaBanco:7, contaAplicacao:20, contaDigital:34, contaCorretagemAluguel:49, contaDividendosAluguel:67,
     socios:[{token:"ANDRE",nomeCompleto:"André Antonio Althoff",contaLucros:348},
             {token:"FERNANDA",nomeCompleto:"Fernanda Freitas Simon Althoff",contaLucros:22}],
-    temBTG:true },
+    temBTG:true, temUnicred:false },
   { id:"EBR", nome:"EBR Investimentos", icon:"🏢", cnpj:"66.901.526/0001-50", codigoDominio:358,
     contaBanco:7, contaAplicacao:20,
     socios:[{token:"ERICA",nomeCompleto:"Erica Barreiros Ribeiro",contaLucros:22}],
@@ -695,7 +702,7 @@ function goCadastro(which){
   else { renderCustoTable(); showScreen("screen-cad-custo"); renderCrumbs([{label:"Custo Médio de Ações"}]); }
 }
 document.getElementById("empresaPicker").innerHTML = EMPRESAS.map(e=>
-  `<div class="pick-card" onclick="goEmpresa('${e.id}')"><div class="icon">${e.icon}</div><div class="name">${e.nome}</div><div class="desc">${e.cnpj}${e.temBTG?' · Unicred + BTG':' · Unicred'}</div></div>`
+  `<div class="pick-card" onclick="goEmpresa('${e.id}')"><div class="icon">${e.icon}</div><div class="name">${e.nome}</div><div class="desc">${e.cnpj} · ${[e.temUnicred===false?null:'Unicred', e.temBTG?'BTG':null].filter(Boolean).join(' + ')}</div></div>`
 ).join("");
 
 function goEmpresa(empId){
@@ -707,6 +714,8 @@ function goEmpresa(empId){
   document.getElementById("boxLanc").classList.add("hidden");
   document.getElementById("boxIgnorados").classList.add("hidden");
   document.getElementById("empresaStatus").classList.add("hidden");
+  document.getElementById("boxCustoAcoes").classList.toggle("hidden", !currentEmpresa.temBTG);
+  if(currentEmpresa.temBTG) renderEmpresaCustoTable();
   showScreen("screen-empresa");
   renderCrumbs([{label:currentEmpresa.nome}]);
 }
@@ -727,7 +736,8 @@ const DOCS_BTG = [
   {key:"contaRemunera", label:"Conta Remunera BTG", desc:"Extrato de conta corrente PJ (Remunera+)", multiple:false},
 ];
 function renderDocGrid(){
-  const docs = currentEmpresa.temBTG ? DOCS_COMUNS.concat(DOCS_BTG) : DOCS_COMUNS;
+  let docs = currentEmpresa.temUnicred===false ? [] : DOCS_COMUNS;
+  if(currentEmpresa.temBTG) docs = docs.concat(DOCS_BTG);
   const grid = document.getElementById("empresaDocGrid");
   grid.innerHTML = docs.map(d=>`
     <div class="field">
@@ -1690,6 +1700,32 @@ function updateCusto(i, field, val){
 function updateCustoValor(i, val){ custoDB[i].custoTotal = parseBRL(val)||0; saveCustoAcoes(custoDB); renderCustoTable(); }
 function removeCusto(i){ custoDB.splice(i,1); saveCustoAcoes(custoDB); renderCustoTable(); }
 function addCustoRow(){ custoDB.push({empresaId:EMPRESAS[0].id, ticket:"", contaNegociada:null, contaAlugada:null, quantidade:0, custoTotal:0}); saveCustoAcoes(custoDB); renderCustoTable(); }
+
+// Mesma tabela de custo médio, só que filtrada pra empresa aberta —
+// mostrada logo abaixo dos documentos, pra cadastrar a conta contábil da
+// ação sem precisar sair da tela e ir no cadastro global.
+function renderEmpresaCustoTable(){
+  const tbl = document.getElementById("empresaCustoTable");
+  const rows = custoDB.map((c,i)=>({c,i})).filter(r=>r.c.empresaId===currentEmpresa.id);
+  let html = `<thead><tr><th>Ticket</th><th>Conta Negociada</th><th>Conta Alugada</th><th>Quantidade</th><th>Custo Total</th><th>Custo Médio</th><th></th></tr></thead><tbody>`;
+  rows.forEach(({c,i})=>{
+    html += `<tr>
+      <td><input class="mini" style="width:80px" value="${c.ticket}" onchange="updateCusto(${i},'ticket',this.value.toUpperCase());renderEmpresaCustoTable()"></td>
+      <td><input class="mini" style="width:70px" value="${c.contaNegociada??''}" onchange="updateCusto(${i},'contaNegociada',this.value);renderEmpresaCustoTable()"></td>
+      <td><input class="mini" style="width:70px" value="${c.contaAlugada??''}" onchange="updateCusto(${i},'contaAlugada',this.value);renderEmpresaCustoTable()"></td>
+      <td><input class="mini" style="width:90px" value="${c.quantidade}" onchange="updateCusto(${i},'quantidade',this.value);renderEmpresaCustoTable()"></td>
+      <td><input class="mini" style="width:110px" value="${fmtBRL(c.custoTotal)}" onchange="updateCustoValor(${i},this.value);renderEmpresaCustoTable()"></td>
+      <td class="num">R$ ${fmtBRL(custoMedioUnitario(c))}</td>
+      <td><button class="btn small ghost" onclick="removeCusto(${i});renderEmpresaCustoTable()">✕</button></td>
+    </tr>`;
+  });
+  html += "</tbody>";
+  tbl.innerHTML = html;
+}
+function addCustoRowEmpresa(){
+  custoDB.push({empresaId:currentEmpresa.id, ticket:"", contaNegociada:null, contaAlugada:null, quantidade:0, custoTotal:0});
+  saveCustoAcoes(custoDB); renderEmpresaCustoTable();
+}
 </script>
 </body>
 </html>
