@@ -2031,8 +2031,10 @@ function valorRecebidoEscrita(r){ return r.valorRecebido ?? liquidoDaNota(r); }
 function jurosEscrita(r){ return Math.round((valorRecebidoEscrita(r) - liquidoDaNota(r))*100)/100; }
 function baixaServicosRowArray(r){
   const dataFmt = r.data ? fmtDateBR(r.data) : "";
+  // Série do Documento — coluna exigida pelo Domínio na baixa de serviços, logo após o
+  // Número da Nota; é sempre "U", não varia por cliente/nota.
   return [
-    r.numeroDocumento||"", onlyDigits(r.cnpj), dataFmt, dataFmt,
+    r.numeroDocumento||"", "U", onlyDigits(r.cnpj), dataFmt, dataFmt,
     valorRecebidoEscrita(r), jurosEscrita(r), 0, 0, 0, 0, 0, 0,
   ];
 }
