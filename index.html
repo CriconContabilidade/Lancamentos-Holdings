@@ -1947,7 +1947,7 @@ function aplicarRevisaoContaCorrente(){
 const ESCRITA_HEADER = ["CPF/CNPJ","Razão Social","UF","Município","Endereço","Número Documento","Série","Data","Situação","Acumulador","CFPS","Valor Serviços","Valor Descontos","Valor Dedução","Valor Contábil","Base de Calculo","Alíquota ISS","Valor ISS Normal","Valor ISS Retido","Valor IRRF","Valor PIS","Valor COFINS","Valor CSLL","Valo CRF","Valor INSS","Código do Item","Quantidade","Valor Unitário"];
 function escritaRowArray(r){
   const row = new Array(28).fill("");
-  row[0]=r.cnpj; row[5]=r.numeroDocumento||""; row[6]=1; row[7]=r.data?fmtDateBR(r.data):""; row[8]=0; row[9]=r.acumulador; row[10]=9101;
+  row[0]=r.cnpj; row[5]=r.numeroDocumento||""; row[6]="U"; row[7]=r.data?fmtDateBR(r.data):""; row[8]=0; row[9]=r.acumulador; row[10]=9101;
   row[11]=r.valorServicos; row[14]=r.valorContabil; row[15]=r.baseCalculo; row[19]=r.valorIRRF;
   return row;
 }
